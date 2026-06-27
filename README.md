@@ -38,9 +38,12 @@ Each builder accepts these optional arguments:
 | `extraPackages` | `[ ]` | **Append.** Extra packages added onto the built-in tool set (`agent-sandbox`'s `commonTools`). |
 | `extraRwDirs` | `[ ]` | **Append.** Extra read/write directories added onto the defaults. |
 | `extraRwFiles` | `[ ]` | **Append.** Extra read/write files added onto the defaults. |
+| `extraEnv` | `{ }` | **Merge.** Attrset `//`-merged onto the default env. Keys here win, so it can also override a default. |
 
-`allowedDomains` **replaces** the whole allowlist; the three `extra*` lists are
-**appended** onto the built-in defaults.
+`allowedDomains` and `extraEnv` are attrsets: `allowedDomains` **replaces** the
+whole allowlist (merge with `//` to keep the defaults), while `extraEnv`
+**merges** onto the default env. The three `extra*` lists are **appended** onto
+the built-in defaults.
 
 ### `allowedDomains` format
 
@@ -83,6 +86,13 @@ allowedDomains = {
         extraPackages = [ pkgs.ripgrep pkgs.jq ];
         extraRwDirs = [ "$HOME/.cache/agent" "$HOME/project/scratch" ];
         extraRwFiles = [ "$HOME/.netrc" ];
+
+        # Merge onto the default env (runtime shell-var refs keep secrets
+        # out of the /nix/store).
+        extraEnv = {
+          ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
+          HTTPS_PROXY = "$HTTPS_PROXY";
+        };
       };
 
       devShells.${system}.default = pkgs.mkShell {
@@ -99,6 +109,9 @@ Notes:
   paths rather than being baked into the `/nix/store`.
 - `extraPackages` takes derivations — reference them from your own `pkgs`
   (matching `system`).
+- `extraEnv` values are passed verbatim to the launcher; use `"$VAR"` shell-var
+  references for secrets so they expand at runtime and stay out of the
+  `/nix/store`. A key matching a default (e.g. `GITHUB_TOKEN`) overrides it.
 - Replacing `allowedDomains` entirely (without `// agentDomains`) drops the
   default Anthropic/GitHub origins, so the agent won't be able to reach them.
   Pass `[ ]` to block all egress.

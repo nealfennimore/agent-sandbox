@@ -59,12 +59,15 @@
         #     exported `agentDomains` default.
         #   - extraPackages / extraRwDirs / extraRwFiles: lists appended
         #     onto the built-in defaults.
+        #   - extraEnv: attrset `//`-merged onto the default env (later
+        #     keys win, so it can also override defaults).
         mkClaudeSandbox =
           {
             allowedDomains ? agentDomains,
             extraPackages ? [ ],
             extraRwDirs ? [ ],
             extraRwFiles ? [ ],
+            extraEnv ? { },
           }:
           sbx.mkSandbox {
             pkg = pkgs.claude-code;
@@ -81,7 +84,7 @@
               CLAUDE_CODE_OAUTH_TOKEN = "$CLAUDE_CODE_OAUTH_TOKEN";
               GITHUB_TOKEN = "$GITHUB_TOKEN";
               CLAUDE_CONFIG_DIR = "$HOME/.claude";
-            };
+            } // extraEnv;
             inherit allowedDomains;
           };
 
@@ -91,6 +94,7 @@
             extraPackages ? [ ],
             extraRwDirs ? [ ],
             extraRwFiles ? [ ],
+            extraEnv ? { },
           }:
           sbx.mkSandbox {
             pkg = llm-agents.packages.${system}.opencode;
@@ -106,7 +110,7 @@
             env = {
               # Add whatever provider key opencode is configured to use, e.g.:
               # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
-            };
+            } // extraEnv;
             inherit allowedDomains;
           };
 
@@ -123,6 +127,7 @@
         #     extraPackages = [ pkgs.ripgrep ];
         #     extraRwDirs   = [ "$HOME/.cache/agent" ];
         #     extraRwFiles  = [ "$HOME/.netrc" ];
+        #     extraEnv      = { ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"; };
         #   }
         lib = {
           inherit agentDomains mkClaudeSandbox mkOpencodeSandbox;
