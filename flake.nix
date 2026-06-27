@@ -98,9 +98,6 @@
               claude-sandboxed
               opencode-sandboxed
             ];
-            shellHook = ''
-              export CLAUDE_CODE_OAUTH_TOKEN="$(op read 'op://Private/Claude OAUTH/credential')"
-            '';
           };
         };
 
