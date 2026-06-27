@@ -52,44 +52,82 @@
           ];
         };
 
-        claude-sandboxed = sbx.mkSandbox {
-          pkg = pkgs.claude-code;
-          binName = "claude";
-          outName = "claude";
-          allowedPackages = sbx.commonTools;
-          rwDirs = [ "$HOME/.claude" ];
-          rwFiles = [ ];
-          # Bind host gitconfig read-only for git identity (optional):
-          # roFiles = [ "$HOME/.config/git/config" ];
-          env = {
-            # Secrets are passed as runtime shell-var references so they
-            # expand in the shell, never landing in the /nix/store.
-            CLAUDE_CODE_OAUTH_TOKEN = "$CLAUDE_CODE_OAUTH_TOKEN";
-            GITHUB_TOKEN = "$GITHUB_TOKEN";
-            CLAUDE_CONFIG_DIR = "$HOME/.claude";
+        # Builders that accept an overridable host-origin allowlist plus
+        # append-style extensions for packages and read/write paths.
+        # Downstream flakes call these via `lib.${system}`:
+        #   - allowedDomains: replace wholesale, or `//`-merge onto the
+        #     exported `agentDomains` default.
+        #   - extraPackages / extraRwDirs / extraRwFiles: lists appended
+        #     onto the built-in defaults.
+        mkClaudeSandbox =
+          {
+            allowedDomains ? agentDomains,
+            extraPackages ? [ ],
+            extraRwDirs ? [ ],
+            extraRwFiles ? [ ],
+          }:
+          sbx.mkSandbox {
+            pkg = pkgs.claude-code;
+            binName = "claude";
+            outName = "claude";
+            allowedPackages = sbx.commonTools ++ extraPackages;
+            rwDirs = [ "$HOME/.claude" ] ++ extraRwDirs;
+            rwFiles = [ ] ++ extraRwFiles;
+            # Bind host gitconfig read-only for git identity (optional):
+            # roFiles = [ "$HOME/.config/git/config" ];
+            env = {
+              # Secrets are passed as runtime shell-var references so they
+              # expand in the shell, never landing in the /nix/store.
+              CLAUDE_CODE_OAUTH_TOKEN = "$CLAUDE_CODE_OAUTH_TOKEN";
+              GITHUB_TOKEN = "$GITHUB_TOKEN";
+              CLAUDE_CONFIG_DIR = "$HOME/.claude";
+            };
+            inherit allowedDomains;
           };
-          allowedDomains = agentDomains;
-        };
 
-        opencode-sandboxed = sbx.mkSandbox {
-          pkg = llm-agents.packages.${system}.opencode;
-          binName = "opencode";
-          outName = "opencode";
-          allowedPackages = sbx.commonTools;
-          rwDirs = [
-            "$HOME/.config/opencode"
-            "$HOME/.local/share/opencode"
-            "$HOME/.local/state/opencode"
-          ];
-          rwFiles = [ ];
-          env = {
-            # Add whatever provider key opencode is configured to use, e.g.:
-            # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
+        mkOpencodeSandbox =
+          {
+            allowedDomains ? agentDomains,
+            extraPackages ? [ ],
+            extraRwDirs ? [ ],
+            extraRwFiles ? [ ],
+          }:
+          sbx.mkSandbox {
+            pkg = llm-agents.packages.${system}.opencode;
+            binName = "opencode";
+            outName = "opencode";
+            allowedPackages = sbx.commonTools ++ extraPackages;
+            rwDirs = [
+              "$HOME/.config/opencode"
+              "$HOME/.local/share/opencode"
+              "$HOME/.local/state/opencode"
+            ] ++ extraRwDirs;
+            rwFiles = [ ] ++ extraRwFiles;
+            env = {
+              # Add whatever provider key opencode is configured to use, e.g.:
+              # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
+            };
+            inherit allowedDomains;
           };
-          allowedDomains = agentDomains;
-        };
+
+        claude-sandboxed = mkClaudeSandbox { };
+        opencode-sandboxed = mkOpencodeSandbox { };
       in
       {
+        # Reusable builders for downstream flakes. See README.md for the
+        # full extension guide. Example:
+        #   agentbox.lib.${system}.mkClaudeSandbox {
+        #     allowedDomains = agentbox.lib.${system}.agentDomains // {
+        #       "internal.example.com" = "*";
+        #     };
+        #     extraPackages = [ pkgs.ripgrep ];
+        #     extraRwDirs   = [ "$HOME/.cache/agent" ];
+        #     extraRwFiles  = [ "$HOME/.netrc" ];
+        #   }
+        lib = {
+          inherit agentDomains mkClaudeSandbox mkOpencodeSandbox;
+        };
+
         devShells = {
           claude = pkgs.mkShell { packages = [ claude-sandboxed ]; };
           opencode = pkgs.mkShell { packages = [ opencode-sandboxed ]; };
