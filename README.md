@@ -61,7 +61,7 @@ allowedDomains = {
 {
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
-    agentbox.url = "github:you/test-opencode";
+    agentbox.url = "github:nealfennimore/agent-sandbox";
   };
 
   outputs =
