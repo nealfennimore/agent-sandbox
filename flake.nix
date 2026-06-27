@@ -55,7 +55,7 @@
         claude-sandboxed = sbx.mkSandbox {
           pkg = pkgs.claude-code;
           binName = "claude";
-          outName = "claude-sandboxed";
+          outName = "claude";
           allowedPackages = sbx.commonTools;
           rwDirs = [ "$HOME/.claude" ];
           rwFiles = [ ];
@@ -74,7 +74,7 @@
         opencode-sandboxed = sbx.mkSandbox {
           pkg = llm-agents.packages.${system}.opencode;
           binName = "opencode";
-          outName = "opencode-sandboxed";
+          outName = "opencode";
           allowedPackages = sbx.commonTools;
           rwDirs = [
             "$HOME/.config/opencode"
