@@ -33,11 +33,15 @@
         };
         sbx = agent-sandbox.lib.${system};
 
+        # Bare minimum domain to get Claude working
+        baseDomains = {
+          "anthropic.com" = "*";
+          "claude.com" = "*";
+        };
+
         # Domains the agent is allowed to reach. "*" = all HTTP methods;
         # a list restricts to those methods (read-only access to GitHub here).
         agentDomains = {
-          "anthropic.com" = "*";
-          "claude.com" = "*";
           "raw.githubusercontent.com" = [
             "GET"
             "HEAD"
@@ -85,7 +89,7 @@
               GITHUB_TOKEN = "$GITHUB_TOKEN";
               CLAUDE_CONFIG_DIR = "$HOME/.claude";
             } // extraEnv;
-            inherit allowedDomains;
+            allowedDomains = allowedDomains // baseDomains;
           };
 
         mkOpencodeSandbox =
@@ -111,7 +115,7 @@
               # Add whatever provider key opencode is configured to use, e.g.:
               # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
             } // extraEnv;
-            inherit allowedDomains;
+            allowedDomains = allowedDomains // baseDomains;
           };
 
         claude-sandboxed = mkClaudeSandbox { };
