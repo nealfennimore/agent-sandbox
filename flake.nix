@@ -67,6 +67,7 @@
         #     keys win, so it can also override defaults).
         mkClaudeSandbox =
           {
+            claude-code ? pkgs.claude-code,
             allowedDomains ? agentDomains,
             extraPackages ? [ ],
             extraRwDirs ? [ ],
@@ -74,7 +75,7 @@
             extraEnv ? { },
           }:
           sbx.mkSandbox {
-            pkg = pkgs.claude-code;
+            pkg = claude-code;
             binName = "claude";
             outName = "claude";
             allowedPackages = sbx.commonTools ++ extraPackages;
