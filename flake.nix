@@ -89,12 +89,14 @@
               CLAUDE_CODE_OAUTH_TOKEN = "$CLAUDE_CODE_OAUTH_TOKEN";
               GITHUB_TOKEN = "$GITHUB_TOKEN";
               CLAUDE_CONFIG_DIR = "$HOME/.claude";
-            } // extraEnv;
+            }
+            // extraEnv;
             allowedDomains = allowedDomains // baseDomains;
           };
 
         mkOpencodeSandbox =
           {
+            opencode ? pkgs.opencode,
             allowedDomains ? agentDomains,
             extraPackages ? [ ],
             extraRwDirs ? [ ],
@@ -102,7 +104,7 @@
             extraEnv ? { },
           }:
           sbx.mkSandbox {
-            pkg = llm-agents.packages.${system}.opencode;
+            pkg = opencode;
             binName = "opencode";
             outName = "opencode";
             allowedPackages = sbx.commonTools ++ extraPackages;
@@ -110,12 +112,14 @@
               "$HOME/.config/opencode"
               "$HOME/.local/share/opencode"
               "$HOME/.local/state/opencode"
-            ] ++ extraRwDirs;
+            ]
+            ++ extraRwDirs;
             rwFiles = [ ] ++ extraRwFiles;
             env = {
               # Add whatever provider key opencode is configured to use, e.g.:
               # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
-            } // extraEnv;
+            }
+            // extraEnv;
             allowedDomains = allowedDomains // baseDomains;
           };
 
