@@ -1,5 +1,5 @@
 {
-  # Test flake: sandbox Claude Code (and OpenCode) with agent-sandbox.nix.
+  # Test flake: sandbox Claude Code, OpenCode, and Codex with agent-sandbox.nix.
   # Network egress is restricted to an explicit per-domain / per-method
   # allowlist, enforced by a private netns (pasta) + nftables + a MITM
   # filtering proxy. Everything not in `allowedDomains` is dropped.
@@ -31,7 +31,18 @@
           inherit system;
           config.allowUnfree = true;
         };
-        sbx = agent-sandbox.lib.${system};
+        # agent-sandbox.nix builds its MITM proxy from its own source tree and
+        # exposes no override for it. The patch teaches that proxy to accept a
+        # port in an allowlist key ("host:port"). Upstream accepts port 443 for
+        # CONNECT and port 80 for plaintext only. See patches/proxy-ports.patch.
+        # The patched tree keeps the same interface, so `default.nix` gives the
+        # same `mkSandbox` and `commonTools` as `agent-sandbox.lib.${system}`.
+        sbxSrc = pkgs.applyPatches {
+          name = "agent-sandbox-patched";
+          src = agent-sandbox;
+          patches = [ ./patches/proxy-ports.patch ];
+        };
+        sbx = import sbxSrc { inherit pkgs; };
 
         # Bare minimum domain to get Claude working
         baseDomains = {
@@ -39,8 +50,18 @@
           "claude.com" = "*";
         };
 
+        # Bare minimum domains to get Codex working. "openai.com" also covers
+        # api.openai.com and auth.openai.com (suffix match); chatgpt.com is
+        # used by ChatGPT-plan auth and its backend API.
+        codexBaseDomains = {
+          "openai.com" = "*";
+          "chatgpt.com" = "*";
+        };
+
         # Domains the agent is allowed to reach. "*" = all HTTP methods;
         # a list restricts to those methods (read-only access to GitHub here).
+        # A key without a port covers ports 80 and 443. To reach another port,
+        # add the port to the key: "internal.example.com:8443" = "*";
         agentDomains = {
           "raw.githubusercontent.com" = [
             "GET"
@@ -123,8 +144,36 @@
             allowedDomains = allowedDomains // baseDomains;
           };
 
+        mkCodexSandbox =
+          {
+            codex ? pkgs.codex,
+            allowedDomains ? agentDomains,
+            extraPackages ? [ ],
+            extraRwDirs ? [ ],
+            extraRwFiles ? [ ],
+            extraEnv ? { },
+          }:
+          sbx.mkSandbox {
+            pkg = codex;
+            binName = "codex";
+            outName = "codex";
+            allowedPackages = sbx.commonTools ++ extraPackages;
+            rwDirs = [ "$HOME/.codex" ] ++ extraRwDirs;
+            rwFiles = [ ] ++ extraRwFiles;
+            env = {
+              # Secrets are passed as runtime shell-var references so they
+              # expand in the shell, never landing in the /nix/store.
+              OPENAI_API_KEY = "$OPENAI_API_KEY";
+              GITHUB_TOKEN = "$GITHUB_TOKEN";
+              CODEX_HOME = "$HOME/.codex";
+            }
+            // extraEnv;
+            allowedDomains = allowedDomains // codexBaseDomains;
+          };
+
         claude-sandboxed = mkClaudeSandbox { };
         opencode-sandboxed = mkOpencodeSandbox { };
+        codex-sandboxed = mkCodexSandbox { };
       in
       {
         # Reusable builders for downstream flakes. See README.md for the
@@ -139,16 +188,23 @@
         #     extraEnv      = { ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"; };
         #   }
         lib = {
-          inherit agentDomains mkClaudeSandbox mkOpencodeSandbox;
+          inherit
+            agentDomains
+            mkClaudeSandbox
+            mkOpencodeSandbox
+            mkCodexSandbox
+            ;
         };
 
         devShells = {
           claude = pkgs.mkShell { packages = [ claude-sandboxed ]; };
           opencode = pkgs.mkShell { packages = [ opencode-sandboxed ]; };
+          codex = pkgs.mkShell { packages = [ codex-sandboxed ]; };
           default = pkgs.mkShell {
             packages = [
               claude-sandboxed
               opencode-sandboxed
+              codex-sandboxed
             ];
           };
         };
@@ -156,6 +212,7 @@
         packages = {
           claude = claude-sandboxed;
           opencode = opencode-sandboxed;
+          codex = codex-sandboxed;
         };
       }
     );

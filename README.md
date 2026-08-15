@@ -1,7 +1,8 @@
 # agent-sandbox flake
 
-Sandboxed [Claude Code](https://docs.claude.com/en/docs/claude-code) and
-[OpenCode](https://github.com/numtide/llm-agents.nix), wrapped with
+Sandboxed [Claude Code](https://docs.claude.com/en/docs/claude-code),
+[OpenCode](https://github.com/numtide/llm-agents.nix), and
+[Codex](https://github.com/openai/codex), wrapped with
 [`agent-sandbox.nix`](https://github.com/archie-judd/agent-sandbox.nix).
 
 Network egress is restricted to an explicit per-domain / per-method allowlist,
@@ -13,7 +14,8 @@ Everything not in the allowlist is dropped.
 ```sh
 nix develop .#claude      # dev shell with `claude` on PATH
 nix develop .#opencode    # dev shell with `opencode` on PATH
-nix develop               # both
+nix develop .#codex       # dev shell with `codex` on PATH
+nix develop               # all three
 
 # or run the package directly
 nix run .#claude
@@ -28,6 +30,7 @@ flake can extend the sandbox without forking it:
 | --- | --- |
 | `lib.${system}.mkClaudeSandbox` | Builder for the Claude sandbox |
 | `lib.${system}.mkOpencodeSandbox` | Builder for the OpenCode sandbox |
+| `lib.${system}.mkCodexSandbox` | Builder for the Codex sandbox |
 | `lib.${system}.agentDomains` | The default host-origin allowlist (an attrset), exported so you can merge onto it |
 
 Each builder accepts these optional arguments:
@@ -57,6 +60,30 @@ allowedDomains = {
   "github.com" = [ "GET" "HEAD" ];
 };
 ```
+
+#### Ports
+
+A key without a port covers port 443 (HTTPS) and port 80 (plaintext HTTP). To
+reach a different port, put the port in the key:
+
+```nix
+allowedDomains = {
+  "internal.example.com:8443" = "*";        # HTTPS on 8443 only
+  "metrics.example.com:9090" = [ "GET" ];   # read-only on 9090
+};
+```
+
+Rules for a key with a port:
+
+- The key covers that port only. `"example.com:8443"` does not allow port 443.
+- The port applies to the suffix match too, so `"example.com:8443"` also covers
+  `api.example.com:8443`.
+- To allow both the default ports and an extra port, write two keys.
+- Write an IPv6 literal in brackets: `"[::1]:8443"`.
+
+The port support comes from `patches/proxy-ports.patch`, which this flake
+applies to the `agent-sandbox.nix` input. Upstream allows port 443 for `CONNECT`
+and port 80 for plaintext only.
 
 ### Example downstream flake
 
@@ -126,4 +153,12 @@ calling shell and never land in the `/nix/store`. Export them before launching:
 export CLAUDE_CODE_OAUTH_TOKEN=...
 export GITHUB_TOKEN=...
 nix run .#claude
+
+export OPENAI_API_KEY=...
+nix run .#codex
 ```
+
+Codex can also use a ChatGPT login instead of `OPENAI_API_KEY`. The login
+credentials live in `$HOME/.codex`, which the sandbox mounts read/write. If the
+browser login flow does not work inside the sandbox, run `codex login` outside
+the sandbox first.
