@@ -1,0 +1,207 @@
+diff --git a/proxy/main.go b/proxy/main.go
+index 379cc50..dda3f2b 100644
+--- a/proxy/main.go
++++ b/proxy/main.go
+@@ -15,6 +15,7 @@ import (
+ 	"net"
+ 	"net/http"
+ 	"os"
++	"strconv"
+ 	"strings"
+ 	"sync"
+ 	"sync/atomic"
+@@ -27,7 +28,10 @@ type DomainPolicy struct {
+ 	Methods  map[string]bool
+ }
+ 
+-// Config maps domain names to their policies. The "*" key is the default policy.
++// Config maps allowlist entries to their policies. An entry is a domain
++// ("example.com") or a domain and a port ("example.com:8443"). The "*" key is
++// the default policy. An entry without a port covers the default ports only.
++// Write an IPv6 literal in brackets ("[::1]:8443").
+ type Config map[string]DomainPolicy
+ 
+ // Redirects maps a lowercase hostname to a local "host:port" address.
+@@ -99,6 +103,11 @@ func loadConfig(path string) (Config, error) {
+ 	cfg := make(Config)
+ 	for domain, val := range raw {
+ 		domain = strings.ToLower(domain)
++		if _, port := splitEntry(domain); port != "" {
++			if n, err := strconv.Atoi(port); err != nil || n < 1 || n > 65535 {
++				fmt.Fprintf(os.Stderr, "WARNING: invalid port in allowlist entry %q\n", domain)
++			}
++		}
+ 		// Try string first ("*"), then array of methods
+ 		var star string
+ 		if err := json.Unmarshal(val, &star); err == nil {
+@@ -126,40 +135,71 @@ func loadConfig(path string) (Config, error) {
+ 	return cfg, nil
+ }
+ 
+-// lookupPolicy finds the policy for a host, falling back to the "*" default.
+-// When multiple suffix entries match, the longest (most specific) wins.
+-func lookupPolicy(host string, cfg Config) (DomainPolicy, bool) {
+-	host = strings.ToLower(host)
+-	if p, ok := cfg[host]; ok {
+-		return p, true
++// defaultPorts are the ports that an allowlist entry covers when the entry
++// names no port: 443 for CONNECT (TLS) and 80 for plaintext HTTP.
++var defaultPorts = map[string]bool{"80": true, "443": true}
++
++// splitEntry splits an allowlist entry into its domain and port parts. An
++// entry without a port gives an empty port.
++func splitEntry(entry string) (string, string) {
++	domain, port, err := net.SplitHostPort(entry)
++	if err != nil {
++		return entry, ""
++	}
++	return domain, port
++}
++
++// entryPortMatches reports whether an allowlist entry covers a request port.
++// An entry without a port covers the default ports only.
++func entryPortMatches(entryPort, port string) bool {
++	if entryPort == "" {
++		return defaultPorts[port]
+ 	}
+-	// Collect all suffix matches and pick the longest (most specific).
+-	var bestDomain string
++	return entryPort == port
++}
++
++// lookupPolicy finds the policy for a host and port, falling back to the "*"
++// default. When more than one entry matches, the longest (most specific)
++// domain wins. An exact domain beats a suffix match of the same length, and an
++// entry with an explicit port beats an entry without one.
++func lookupPolicy(host, port string, cfg Config) (DomainPolicy, bool) {
++	host = strings.ToLower(host)
+ 	var bestPolicy DomainPolicy
+-	for d, p := range cfg {
+-		if d != "*" && strings.HasSuffix(host, "."+d) {
+-			if len(d) > len(bestDomain) {
+-				bestDomain = d
+-				bestPolicy = p
+-			}
++	bestScore := -1
++	for entry, policy := range cfg {
++		domain, entryPort := splitEntry(entry)
++		if !entryPortMatches(entryPort, port) {
++			continue
++		}
++		var score int
++		switch {
++		case domain == "*":
++			score = 0
++		case host == domain:
++			score = 4*len(domain) + 2
++		case strings.HasSuffix(host, "."+domain):
++			score = 4 * len(domain)
++		default:
++			continue
++		}
++		if entryPort != "" {
++			score++
++		}
++		if score > bestScore {
++			bestScore = score
++			bestPolicy = policy
+ 		}
+ 	}
+-	if bestDomain != "" {
+-		return bestPolicy, true
+-	}
+-	if p, ok := cfg["*"]; ok {
+-		return p, true
+-	}
+-	return DomainPolicy{}, false
++	return bestPolicy, bestScore >= 0
+ }
+ 
+-func isDomainAllowed(host string, cfg Config) bool {
+-	_, ok := lookupPolicy(host, cfg)
++func isDomainAllowed(host, port string, cfg Config) bool {
++	_, ok := lookupPolicy(host, port, cfg)
+ 	return ok
+ }
+ 
+-func isMethodAllowed(host, method string, cfg Config) bool {
+-	policy, ok := lookupPolicy(host, cfg)
++func isMethodAllowed(host, port, method string, cfg Config) bool {
++	policy, ok := lookupPolicy(host, port, cfg)
+ 	if !ok {
+ 		return false
+ 	}
+@@ -318,8 +358,8 @@ func requestURLLength(req *http.Request) int {
+ // applyFilters checks method, URL length, and WebSocket restrictions.
+ // Returns an HTTP status code and reason if blocked, or 0 if allowed.
+ // Callers must check isDomainAllowed first; this only applies per-request filters.
+-func applyFilters(req *http.Request, host string, cfg Config) (int, string) {
+-	if !isMethodAllowed(host, req.Method, cfg) {
++func applyFilters(req *http.Request, host, port string, cfg Config) (int, string) {
++	if !isMethodAllowed(host, port, req.Method, cfg) {
+ 		return http.StatusForbidden, "method not allowed"
+ 	}
+ 	// URL length is only enforced for GET/HEAD where the URL carries the
+@@ -390,34 +430,32 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
+ 	}
+ 
+ 	host := hostOnly(req.Host)
++	port := portOf(req.Host)
+ 
+ 	if req.Method == http.MethodConnect {
+-		if portOf(req.Host) != "443" {
+-			fmt.Fprintf(os.Stderr, "%s blocked non-443 CONNECT: %s\n", time.Now().Format(time.RFC3339), req.Host)
+-			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\n\r\n")
+-			return
++		// A CONNECT target names its port. Assume 443 if the client omits it.
++		if port == "" {
++			port = "443"
+ 		}
+-		if !isDomainAllowed(host, cfg) {
++		if !isDomainAllowed(host, port, cfg) {
+ 			fmt.Fprintf(os.Stderr, "%s blocked domain: %s\n", time.Now().Format(time.RFC3339), req.Host)
+ 			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\n\r\n")
+ 			return
+ 		}
+ 		// MITM: intercept the TLS connection to inspect HTTP requests
+ 		fmt.Fprintf(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+-		handleMITM(conn, host, req.Host, cfg, ca, redirects)
++		handleMITM(conn, host, net.JoinHostPort(host, port), port, cfg, ca, redirects)
+ 	} else {
+-		if p := portOf(req.Host); p != "" && p != "80" {
+-			fmt.Fprintf(os.Stderr, "%s blocked non-80 plaintext: %s\n", time.Now().Format(time.RFC3339), req.Host)
+-			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\n\r\n")
+-			return
++		if port == "" {
++			port = "80"
+ 		}
+ 		// Plaintext HTTP — check domain first, then apply full filtering
+-		if !isDomainAllowed(host, cfg) {
++		if !isDomainAllowed(host, port, cfg) {
+ 			fmt.Fprintf(os.Stderr, "%s blocked domain: %s\n", time.Now().Format(time.RFC3339), req.Host)
+ 			fmt.Fprintf(conn, "HTTP/1.1 403 Forbidden\r\n\r\n")
+ 			return
+ 		}
+-		if code, reason := applyFilters(req, host, cfg); code != 0 {
++		if code, reason := applyFilters(req, host, port, cfg); code != 0 {
+ 			fmt.Fprintf(os.Stderr, "%s blocked %s %s (%s, host: %s)\n",
+ 				time.Now().Format(time.RFC3339), req.Method, req.URL, reason, req.Host)
+ 			fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n\r\n", code, http.StatusText(code))
+@@ -450,7 +488,7 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
+ 	}
+ }
+ 
+-func handleMITM(clientConn net.Conn, host, hostPort string, cfg Config, ca *certAuthority, redirects Redirects) {
++func handleMITM(clientConn net.Conn, host, hostPort, port string, cfg Config, ca *certAuthority, redirects Redirects) {
+ 	// Mint a certificate for this host
+ 	leafCert, err := ca.mintCert(host)
+ 	if err != nil {
+@@ -506,7 +544,7 @@ func handleMITM(clientConn net.Conn, host, hostPort string, cfg Config, ca *cert
+ 		}
+ 
+ 		// Apply filters to the decrypted request
+-		if code, reason := applyFilters(req, host, cfg); code != 0 {
++		if code, reason := applyFilters(req, host, port, cfg); code != 0 {
+ 			fmt.Fprintf(os.Stderr, "%s blocked %s https://%s%s (%s)\n",
+ 				time.Now().Format(time.RFC3339), req.Method, host, req.URL.Path, reason)
+ 			resp := &http.Response{
