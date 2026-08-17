@@ -92,7 +92,9 @@
             allowedDomains ? agentDomains,
             extraPackages ? [ ],
             extraRwDirs ? [ ],
+            extraRoDirs ? [ ],
             extraRwFiles ? [ ],
+            extraRoFiles ? [ ],
             extraEnv ? { },
           }:
           sbx.mkSandbox {
@@ -102,6 +104,8 @@
             allowedPackages = sbx.commonTools ++ extraPackages;
             rwDirs = [ "$HOME/.claude" ] ++ extraRwDirs;
             rwFiles = [ ] ++ extraRwFiles;
+            roDirs = [ ] ++ extraRoDirs;
+            roFiles = [ ] ++ extraRoFiles;
             # Bind host gitconfig read-only for git identity (optional):
             # roFiles = [ "$HOME/.config/git/config" ];
             env = {
@@ -121,7 +125,9 @@
             allowedDomains ? agentDomains,
             extraPackages ? [ ],
             extraRwDirs ? [ ],
+            extraRoDirs ? [ ],
             extraRwFiles ? [ ],
+            extraRoFiles ? [ ],
             extraEnv ? { },
           }:
           sbx.mkSandbox {
@@ -136,6 +142,8 @@
             ]
             ++ extraRwDirs;
             rwFiles = [ ] ++ extraRwFiles;
+            roDirs = [ ] ++ extraRoDirs;
+            roFiles = [ ] ++ extraRoFiles;
             env = {
               # Add whatever provider key opencode is configured to use, e.g.:
               # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
@@ -150,7 +158,9 @@
             allowedDomains ? agentDomains,
             extraPackages ? [ ],
             extraRwDirs ? [ ],
+            extraRoDirs ? [ ],
             extraRwFiles ? [ ],
+            extraRoFiles ? [ ],
             extraEnv ? { },
           }:
           sbx.mkSandbox {
@@ -160,6 +170,8 @@
             allowedPackages = sbx.commonTools ++ extraPackages;
             rwDirs = [ "$HOME/.codex" ] ++ extraRwDirs;
             rwFiles = [ ] ++ extraRwFiles;
+            roDirs = [ ] ++ extraRoDirs;
+            roFiles = [ ] ++ extraRoFiles;
             env = {
               # Secrets are passed as runtime shell-var references so they
               # expand in the shell, never landing in the /nix/store.
