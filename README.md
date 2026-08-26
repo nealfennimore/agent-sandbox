@@ -9,6 +9,17 @@ Network egress is restricted to an explicit per-domain / per-method allowlist,
 enforced by a private netns (pasta) + nftables + a MITM filtering proxy.
 Everything not in the allowlist is dropped.
 
+## Layout
+
+| File | Contents |
+| --- | --- |
+| `flake.nix` | Inputs and output wiring only |
+| `nix/domains.nix` | Domain allowlists |
+| `nix/agents.nix` | Per-agent descriptors (package, dirs, env, domains) |
+| `nix/sandbox.nix` | Sandbox interface (module) and builders |
+| `nix/vm.nix` | MicroVM interface (module) and builder |
+| `nix/guest.nix` | NixOS configuration for the VM guest |
+
 ## Standalone use
 
 ```sh
