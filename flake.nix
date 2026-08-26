@@ -110,6 +110,7 @@
             mkClaudeVm
             mkOpencodeVm
             mkCodexVm
+            mkVmLauncher
             ;
         };
 

@@ -142,6 +142,9 @@ system, so every option is typed and checked. The options are:
 `mkAgentVm` is the generic form. It takes the same agent descriptor as
 `mkAgentSandbox`, then the VM options: `mkAgentVm descriptor config`.
 
+See "Example downstream flake with a VM" below for a complete consumer
+flake, with launcher wrapping and kiosk override included.
+
 Example with a customized sandbox and a forwarded port:
 
 ```nix
@@ -172,6 +175,11 @@ flake can extend the sandbox without forking it:
 | `lib.${system}.mkCodexSandbox` | Builder for the Codex sandbox |
 | `lib.${system}.mkAgentSandbox` | Generic builder. Takes an agent descriptor and a sandbox config. |
 | `lib.${system}.agentDomains` | The default host-origin allowlist (an attrset), exported so you can merge onto it |
+| `lib.${system}.mkClaudeVm` | Builder for the Claude microVM (Linux systems only) |
+| `lib.${system}.mkOpencodeVm` | Builder for the OpenCode microVM (Linux systems only) |
+| `lib.${system}.mkCodexVm` | Builder for the Codex microVM (Linux systems only) |
+| `lib.${system}.mkAgentVm` | Generic VM builder. Takes an agent descriptor and a VM config (Linux systems only) |
+| `lib.${system}.mkVmLauncher` | Wraps a VM runner in a launcher with a distinct name for dev shells (Linux systems only) |
 
 The builders evaluate their argument with the NixOS module system. Each
 argument is a typed option with a default. An unknown or mistyped argument
@@ -304,6 +312,101 @@ Notes:
 - Replacing `allowedDomains` entirely (without `// agentDomains`) drops the
   default Anthropic/GitHub origins, so the agent won't be able to reach them.
   Pass `[ ]` to block all egress.
+
+### Example downstream flake with a VM
+
+The VM builders take the VM options table above. The `sandbox` option
+nests the full sandbox interface, so one call configures both layers.
+The result is a runner package: `nix run` boots the VM from the current
+directory.
+
+```nix
+{
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    agentbox.url = "github:nealfennimore/agent-sandbox";
+  };
+
+  outputs =
+    { nixpkgs, agentbox, ... }:
+    let
+      system = "x86_64-linux";
+      pkgs = import nixpkgs { inherit system; config.allowUnfree = true; };
+      box = agentbox.lib.${system};
+
+      claude-vm = box.mkClaudeVm {
+        # Same options as mkClaudeSandbox. Directories declared here
+        # are shared from the host into the guest automatically.
+        sandbox = {
+          allowedDomains = box.agentDomains // {
+            "internal.example.com" = "*";
+          };
+          extraPackages = [ pkgs.ripgrep ];
+          extraRwDirs = [ "$HOME/.cache/agent" ];
+          # Git identity for commits made inside the guest:
+          extraEnv = {
+            GIT_AUTHOR_NAME = "Agent";
+            GIT_AUTHOR_EMAIL = "agent@example.com";
+            GIT_COMMITTER_NAME = "Agent";
+            GIT_COMMITTER_EMAIL = "agent@example.com";
+          };
+        };
+
+        # VM options.
+        vcpu = 4;
+        mem = 8192;
+        extraModules = [
+          {
+            microvm.forwardPorts = [
+              { from = "host"; host.port = 2222; guest.port = 22; }
+            ];
+          }
+        ];
+      };
+    in
+    {
+      # `nix run .#claude-vm` from a project directory boots the VM,
+      # shares that directory at /workspace, and launches the agent.
+      packages.${system}.claude-vm = claude-vm;
+
+      # Every VM runner exposes the same bin/microvm-run, so wrap each
+      # runner with mkVmLauncher when a dev shell holds more than one.
+      devShells.${system}.default = pkgs.mkShell {
+        packages = [ (box.mkVmLauncher "claude" claude-vm) ];
+      };
+    };
+}
+```
+
+Notes:
+
+- The VM builders and `mkVmLauncher` exist only on Linux systems. A
+  Darwin `lib.${system}` does not contain them.
+- The host needs `/dev/kvm`. Without it, qemu falls back to slow
+  software emulation.
+- Host environment variables do not cross the VM boundary. `"$VAR"`
+  references in `extraEnv` expand to empty inside the guest. Login
+  state travels through the shared sandbox directories instead — see
+  "Sandbox paths inside the VM".
+- The guest boots as a kiosk: it prints share warnings, launches the
+  agent in `/workspace`, and powers off when the agent exits. To get a
+  shell instead, override the kiosk from `extraModules`:
+  `{ environment.loginShellInit = nixpkgs.lib.mkForce "cd /workspace"; }`.
+- For an agent this flake does not know, pass a descriptor to
+  `mkAgentVm` (same descriptor as `mkAgentSandbox`):
+
+```nix
+box.mkAgentVm {
+  binName = "aider";
+  package = pkgs.aider-chat;
+  baseDomains = { "openai.com" = "*"; };
+  rwDirs = [ "$HOME/.aider" ];
+  env = { };
+} {
+  mem = 8192;
+  sandbox.extraPackages = [ pkgs.ripgrep ];
+}
+```
 
 ### Secrets
 
