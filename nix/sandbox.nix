@@ -61,7 +61,7 @@ rec {
       extraRwFiles = lib.mkOption {
         type = with lib.types; listOf str;
         default = [ ];
-        description = "Read/write files appended onto the defaults.";
+        description = "Read/write files appended onto the defaults. Read/write applies to the sandbox binds on a host. The microVM version has no read/write file support: the file is copied into the guest at boot, and guest writes are lost at shutdown.";
       };
       extraRoFiles = lib.mkOption {
         type = with lib.types; listOf str;
@@ -86,9 +86,9 @@ rec {
       outName = agent.binName;
       allowedPackages = sbx.commonTools ++ cfg.extraPackages;
       rwDirs = agent.rwDirs ++ cfg.extraRwDirs;
-      rwFiles = cfg.extraRwFiles;
-      roDirs = cfg.extraRoDirs;
-      roFiles = cfg.extraRoFiles;
+      rwFiles = (agent.rwFiles or [ ]) ++ cfg.extraRwFiles;
+      roDirs = (agent.roDirs or [ ]) ++ cfg.extraRoDirs;
+      roFiles = (agent.roFiles or [ ]) ++ cfg.extraRoFiles;
       env = agent.env // cfg.extraEnv;
       allowedDomains = cfg.allowedDomains // agent.baseDomains;
     };

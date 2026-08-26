@@ -95,17 +95,6 @@
         onLinux = lib.optionals isLinux;
       in
       {
-        # Reusable builders for downstream flakes. See README.md for the
-        # full extension guide. Example:
-        #   agentbox.lib.${system}.mkClaudeSandbox {
-        #     allowedDomains = agentbox.lib.${system}.agentDomains // {
-        #       "internal.example.com" = "*";
-        #     };
-        #     extraPackages = [ pkgs.ripgrep ];
-        #     extraRwDirs   = [ "$HOME/.cache/agent" ];
-        #     extraRwFiles  = [ "$HOME/.netrc" ];
-        #     extraEnv      = { ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY"; };
-        #   }
         lib = {
           inherit (domains) agentDomains;
           inherit

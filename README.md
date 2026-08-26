@@ -56,16 +56,67 @@ The default shell (`nix develop`) provides all three launchers: `claude-vm`,
 `opencode-vm`, and `codex-vm`. The launchers exist only on Linux systems.
 
 The runner boots a minimal NixOS guest and attaches your terminal to its
-serial console. The guest logs in automatically as the `agent` user in
-`/workspace`. Run `claude` from there.
+serial console. The guest logs in automatically as `root`, prints any
+share warnings, and launches the agent directly in `/workspace`. When
+the agent exits, the VM powers off and you are back on the host.
 
 - The launch directory is shared read-write at `/workspace` in the guest.
-  Only that directory is exposed to the guest.
-- The runner creates `claude-vm-home.img` in the launch directory on first
-  run. The image holds `/home`, so agent logins persist across boots.
-- Host environment variables do not cross the VM boundary. Log the agent in
-  once inside the guest (`claude login`, `codex login`). The credentials
-  persist in the home image.
+- Every directory and file that the sandbox declares (the agent defaults
+  plus the `extra*` options) is also shared from the host. See
+  "Sandbox paths inside the VM" below. An agent login on the host (for
+  example `$HOME/.claude`) is therefore visible inside the guest, and a
+  login made inside the guest persists back to the host.
+- The guest home is ephemeral. Durable state lives in the shared
+  sandbox directories on the host.
+- Host environment variables do not cross the VM boundary. The shared
+  sandbox directories carry the login state instead.
+
+### Sandbox paths inside the VM
+
+The sandbox inside the guest binds the same paths as a sandbox on the
+host, so those paths must exist in the guest. The VM builders collect
+them at build time — agent defaults plus `extraRwDirs`, `extraRoDirs`,
+`extraRwFiles`, `extraRoFiles` — and share them from the host:
+
+- A directory mounts at its translated guest path (`$HOME/...` maps to
+  `/root/...`), read-write for the rw set and read-only for the ro
+  set. Missing host directories are created before the VM starts.
+- A file cannot be shared over 9p individually. Its parent directory is
+  staged read-only under `/run/agent-sandbox` and the file is copied
+  into place at boot. The VM version therefore has no read/write
+  files: an `rwFiles` entry degrades to a read-only snapshot, guest
+  writes to it are lost at shutdown, and evaluation prints a warning
+  when a VM declares one. Do not declare a file directly under
+  `$HOME`: that stages your whole home directory read-only in the guest.
+- Only absolute paths and `$HOME`-prefixed paths are supported. Other
+  shell variables in a path fail the build.
+- The guest agent runs as `root`. With an unprivileged qemu, 9p
+  presents the launching user's files as root inside the guest, and
+  only guest root passes the client-side permission checks on them.
+  The inverse mapping holds for writes: guest writes execute host-side
+  as the user that launched the VM, so host files keep your ownership.
+  Expect `ls` inside the guest to show `root` for your files — that is
+  the mapping, not a real ownership change on the host.
+- The agent command in the guest is a shim that starts the sandbox in
+  a user namespace with root mapped to an unprivileged uid. The
+  network sandbox (pasta) refuses to run as root. File access still
+  uses the real root credentials, so the shares stay accessible.
+- A `$HOME` that contains spaces is not supported by the runtime share
+  attachment.
+- If a share fails to attach, the guest boots anyway (`nofail`) and
+  prints a warning at login instead. A missing declared path degrades
+  to "no data", never to "wrong data".
+
+Recorded tradeoffs:
+
+- The 9p shares use `security_model=none` and are policy plumbing, not
+  the isolation boundary. A compromised guest writes to the shared
+  paths as the launching user — that set of paths is the accepted
+  blast radius. The qemu boundary provides the isolation.
+- The VM alone does not protect `.git` in the workspace: the full
+  directory mounts read-write. The inner sandbox re-binds git metadata
+  read-only, so the guest must always run the sandboxed wrapper, never
+  the raw agent. The guest config only installs the wrapped shim.
 
 Requirements: a Linux host with `/dev/kvm`. Without KVM, qemu falls back to
 slow software emulation. The VM outputs exist only on Linux systems.
@@ -86,7 +137,6 @@ system, so every option is typed and checked. The options are:
 | `vcpu` | `2` | Number of virtual CPU cores. |
 | `mem` | `4096` | Guest RAM in MiB. |
 | `workspace` | `"."` | Host path shared at `/workspace`. A relative path resolves against the runtime working directory. |
-| `homeImageSize` | `2048` | Size in MiB of the persistent `/home` image. |
 | `extraModules` | `[ ]` | Extra NixOS modules merged into the guest. |
 
 `mkAgentVm` is the generic form. It takes the same agent descriptor as

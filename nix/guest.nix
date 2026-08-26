@@ -4,29 +4,149 @@
 {
   name, # agent binName, used for the hostname and home image
   agentPackage, # the sandboxed wrapper package to install in the guest
-  cfg, # evaluated vmModule config (vcpu, mem, workspace, homeImageSize)
+  cfg, # evaluated vmModule config
+  sandboxShares, # share specs computed by nix/vm.nix sandboxShares
+  guestUser,
 }:
-{ lib, ... }:
+{ lib, pkgs, ... }:
+let
+  dirShares = lib.filter (s: s.copyTo == null) sandboxShares;
+  fileShares = lib.filter (s: s.copyTo != null) sandboxShares;
+
+  # pasta refuses to run as root: it drops to nobody and then cannot
+  # set up its user and network namespaces. Launch the sandbox inside
+  # a user namespace that maps root to an unprivileged uid. pasta then
+  # takes its normal unprivileged path. Kernel permission checks still
+  # use the real root credentials, so the root-mapped 9p shares stay
+  # accessible, and they appear owned by the mapped uid inside.
+  agentLauncher = pkgs.writeShellScriptBin name ''
+    exec ${pkgs.util-linux}/bin/unshare --user --map-user=1000 --map-group=100 \
+      ${agentPackage}/bin/${name} "$@"
+  '';
+
+  # Emitted by the host at launch time, so $HOME in a share source
+  # expands to the invoking user's home. The output is appended to the
+  # qemu command unescaped by the microvm runner. The static shares
+  # below force qemu onto a PCI machine, so the device type is
+  # virtio-9p-pci.
+  shareArgsScript = pkgs.writeShellScript "${name}-vm-share-args" ''
+    printf '%s ' ${
+      lib.concatMapStringsSep " " (
+        s:
+        ''-fsdev "local,id=${s.tag},path=${s.hostPath},security_model=none,readonly=${
+          if s.readOnly then "on" else "off"
+        }" -device "virtio-9p-pci,fsdev=${s.tag},mount_tag=${s.tag}"''
+      ) sandboxShares
+    }
+  '';
+in
 {
   system.stateVersion = lib.trivial.release;
   networking.hostName = "${name}-vm";
 
-  # Match the common host uid so the 9p workspace share is
-  # writable without remapping.
-  users.users.agent = {
-    isNormalUser = true;
-    uid = 1000;
-    initialPassword = "";
-  };
-  services.getty.autologinUser = "agent";
-  # Land in the shared workspace on login.
-  environment.loginShellInit = "cd /workspace 2>/dev/null || true";
+  # The guest agent runs as root. Unprivileged 9p presents the host
+  # user's files as root inside the guest, so guest root is the peer of
+  # the host user that launched the VM: its writes execute host-side as
+  # that user, and host file ownership stays unchanged.
+  services.getty.autologinUser = guestUser;
+  # Kiosk console: surface share warnings, then launch the agent in
+  # the shared workspace. When the agent exits, the VM powers off —
+  # the guest is not meant to be explored interactively.
+  environment.loginShellInit = ''
+    if [ -s /run/agent-sandbox/warnings ]; then
+      cat /run/agent-sandbox/warnings
+    fi
+    cd /workspace 2>/dev/null || true
+    ${agentLauncher}/bin/${name}
+    echo "${name} exited; powering off"
+    poweroff
+  '';
 
-  environment.systemPackages = [ agentPackage ];
+  # Install only the shim-wrapped, sandboxed agent. Never install the
+  # raw agent package: the VM alone does not protect the workspace (the
+  # full directory, including .git, mounts read-write). The inner
+  # sandbox provides the read-only binds on git metadata and the
+  # egress allowlist. The 9p shares are policy plumbing, not the
+  # isolation boundary — the qemu boundary is.
+  environment.systemPackages = [ agentLauncher ];
+
+  # pasta opens /dev/net/tun inside the sandbox network namespace.
+  boot.kernelModules = [ "tun" ];
+
+  # Sandbox-declared paths, shared from the host. The matching
+  # -fsdev/-device arguments come from microvm.extraArgsScript below.
+  fileSystems = lib.listToAttrs (
+    map (s: {
+      name = s.guestPath;
+      value = {
+        device = s.tag;
+        fsType = "9p";
+        options = [
+          "trans=virtio"
+          "version=9p2000.L"
+          "msize=65536"
+          "nofail"
+          "x-systemd.after=systemd-modules-load.service"
+        ]
+        ++ lib.optional s.readOnly "ro";
+      };
+    }) sandboxShares
+  );
+
+  # Verify the share mounts and stage the declared files. The mounts
+  # are nofail, so a failed attach degrades silently at the fs layer;
+  # this service records a warning that the login shell prints, which
+  # turns "confusing runtime symptom" into a visible boot message.
+  #
+  # Files cannot be shared over 9p individually. The parent directory
+  # is staged read-only under /run/agent-sandbox and the file is
+  # copied into place at boot. Writes inside the guest do not
+  # propagate back.
+  systemd.services.agent-sandbox-shares = lib.mkIf (sandboxShares != [ ]) {
+    description = "Verify sandbox shares and stage declared files";
+    wantedBy = [ "multi-user.target" ];
+    after = [ "local-fs.target" ];
+    # Warnings must be written and files staged before the console
+    # logs in and launches the agent.
+    before = [ "serial-getty@ttyS0.service" ];
+    path = [ pkgs.util-linux ];
+    serviceConfig = {
+      Type = "oneshot";
+      RemainAfterExit = true;
+    };
+    script =
+      ''
+        mkdir -p /run/agent-sandbox
+        warn() {
+          echo "agent-sandbox: WARNING: $*" >> /run/agent-sandbox/warnings
+        }
+      ''
+      + lib.concatMapStrings (s: ''
+        mountpoint -q ${lib.escapeShellArg s.guestPath} \
+          || warn ${lib.escapeShellArg "share ${s.tag} (host ${s.hostPath}) is not mounted at ${s.guestPath}"}
+      '') dirShares
+      + lib.concatMapStrings (s: ''
+        if [ -e ${lib.escapeShellArg "${s.guestPath}/${s.fileName}"} ]; then
+          install -d -m 755 ${lib.escapeShellArg (dirOf s.copyTo)}
+          install -m 600 \
+            ${lib.escapeShellArg "${s.guestPath}/${s.fileName}"} \
+            ${lib.escapeShellArg s.copyTo}
+        else
+          warn ${lib.escapeShellArg "declared file ${s.hostPath}/${s.fileName} did not arrive in its staging share; ${s.copyTo} is absent"}
+        fi
+      '') fileShares;
+  };
 
   microvm = {
     hypervisor = "qemu";
     inherit (cfg) vcpu mem;
+    # Create missing host-side share sources before the VM starts, so
+    # qemu does not fail on a first run.
+    preStart = lib.concatMapStrings (s: ''
+      mkdir -p "${s.hostPath}"
+    '') sandboxShares;
+    # Attach the sandbox shares at runtime, when $HOME is known.
+    extraArgsScript = if sandboxShares != [ ] then "${shareArgsScript}" else null;
     # SLiRP user networking: no root or host setup required.
     interfaces = [
       {
@@ -47,14 +167,6 @@
         source = cfg.workspace;
         mountPoint = "/workspace";
         proto = "9p";
-      }
-    ];
-    # Persist /home (agent credentials, caches) across boots.
-    volumes = [
-      {
-        image = "${name}-vm-home.img";
-        mountPoint = "/home";
-        size = cfg.homeImageSize;
       }
     ];
   };
