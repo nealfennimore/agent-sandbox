@@ -85,6 +85,11 @@ in
           "trans=virtio"
           "version=9p2000.L"
           "msize=65536"
+          # SQLite WAL databases (for example the codex state DB in
+          # $HOME/.codex) need shared writable mmap, which 9p only
+          # provides with cache=mmap. Without it SQLite fails with
+          # SQLITE_IOERR_SHMMAP, reported as "disk I/O error".
+          "cache=mmap"
           "nofail"
           "x-systemd.after=systemd-modules-load.service"
         ]
