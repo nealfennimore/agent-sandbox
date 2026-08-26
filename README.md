@@ -21,6 +21,80 @@ nix develop               # all three
 nix run .#claude
 ```
 
+## MicroVM variants
+
+Each sandboxed agent is also available as a qemu microVM, built with
+[microvm.nix](https://github.com/microvm-nix/microvm.nix). The sandbox wrapper
+runs inside the guest, so the egress allowlist still applies. The VM adds a
+hardware isolation boundary on top of the namespace sandbox.
+
+```sh
+cd ~/my-project
+nix run /path/to/this-flake#claude-vm      # or #opencode-vm / #codex-vm
+```
+
+The dev shells also put a launcher for each VM on the PATH:
+
+```sh
+nix develop .#claude      # provides `claude` and `claude-vm`
+cd ~/my-project
+claude-vm                 # boots the VM from the current directory
+```
+
+The default shell (`nix develop`) provides all three launchers: `claude-vm`,
+`opencode-vm`, and `codex-vm`. The launchers exist only on Linux systems.
+
+The runner boots a minimal NixOS guest and attaches your terminal to its
+serial console. The guest logs in automatically as the `agent` user in
+`/workspace`. Run `claude` from there.
+
+- The launch directory is shared read-write at `/workspace` in the guest.
+  Only that directory is exposed to the guest.
+- The runner creates `claude-vm-home.img` in the launch directory on first
+  run. The image holds `/home`, so agent logins persist across boots.
+- Host environment variables do not cross the VM boundary. Log the agent in
+  once inside the guest (`claude login`, `codex login`). The credentials
+  persist in the home image.
+
+Requirements: a Linux host with `/dev/kvm`. Without KVM, qemu falls back to
+slow software emulation. The VM outputs exist only on Linux systems.
+
+The `modules/microvm` submodule is a local reference copy of microvm.nix.
+The flake consumes the `microvm` flake input, not the submodule.
+
+### VM builders
+
+On Linux systems, `lib.${system}` also exports `mkAgentVm` and the per-agent
+builders `mkClaudeVm`, `mkOpencodeVm`, and `mkCodexVm`. The per-agent
+builders accept these optional arguments:
+
+| Argument | Default | Semantics |
+| --- | --- | --- |
+| `sandbox` | `{ }` | Arguments passed to the matching `mk*Sandbox` builder. |
+| `vcpu` | `2` | Number of virtual CPU cores. |
+| `mem` | `4096` | Guest RAM in MiB. |
+| `workspace` | `"."` | Host path shared at `/workspace`. A relative path resolves against the runtime working directory. |
+| `homeImageSize` | `2048` | Size in MiB of the persistent `/home` image. |
+| `extraModules` | `[ ]` | Extra NixOS modules merged into the guest. |
+
+Example with a customized sandbox and a forwarded port:
+
+```nix
+agentbox.lib.${system}.mkClaudeVm {
+  sandbox = {
+    extraPackages = [ pkgs.ripgrep ];
+  };
+  mem = 8192;
+  extraModules = [
+    {
+      microvm.forwardPorts = [
+        { from = "host"; host.port = 2222; guest.port = 22; }
+      ];
+    }
+  ];
+}
+```
+
 ## Using this flake from another flake
 
 This flake exposes reusable builders under `lib.${system}` so a downstream

@@ -1,0 +1,3 @@
+[submodule "modules/microvm"]
+	path = modules/microvm
+	url = https://github.com/microvm-nix/microvm.nix
