@@ -84,7 +84,19 @@ in
 
   # Sandbox-declared paths, shared from the host. The matching
   # -fsdev/-device arguments come from microvm.extraArgsScript below.
-  fileSystems = lib.listToAttrs (
+  # For /workspace, microvm.nix hardcodes msize=65536; 9p round trips
+  # dominate bulk I/O there, so force a larger buffer. The kernel
+  # clamps msize to the transport maximum when needed.
+  fileSystems = {
+    "/workspace".options = lib.mkForce [
+      "trans=virtio"
+      "version=9p2000.L"
+      "msize=1048576"
+      "cache=mmap"
+      "x-systemd.after=systemd-modules-load.service"
+    ];
+  }
+  // lib.listToAttrs (
     map (s: {
       name = s.guestPath;
       value = {
@@ -93,7 +105,7 @@ in
         options = [
           "trans=virtio"
           "version=9p2000.L"
-          "msize=65536"
+          "msize=1048576"
           # SQLite WAL databases (for example the codex state DB in
           # $HOME/.codex) need shared writable mmap, which 9p only
           # provides with cache=mmap. Without it SQLite fails with
