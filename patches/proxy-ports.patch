@@ -1,8 +1,8 @@
 diff --git a/proxy/main.go b/proxy/main.go
-index 379cc50..dda3f2b 100644
+index a043a34..3c2fe3f 100644
 --- a/proxy/main.go
 +++ b/proxy/main.go
-@@ -15,6 +15,7 @@ import (
+@@ -16,6 +16,7 @@ import (
  	"net"
  	"net/http"
  	"os"
@@ -10,7 +10,7 @@ index 379cc50..dda3f2b 100644
  	"strings"
  	"sync"
  	"sync/atomic"
-@@ -27,7 +28,10 @@ type DomainPolicy struct {
+@@ -28,7 +29,10 @@ type DomainPolicy struct {
  	Methods  map[string]bool
  }
  
@@ -22,7 +22,7 @@ index 379cc50..dda3f2b 100644
  type Config map[string]DomainPolicy
  
  // Redirects maps a lowercase hostname to a local "host:port" address.
-@@ -99,6 +103,11 @@ func loadConfig(path string) (Config, error) {
+@@ -100,6 +104,11 @@ func loadConfig(path string) (Config, error) {
  	cfg := make(Config)
  	for domain, val := range raw {
  		domain = strings.ToLower(domain)
@@ -34,7 +34,7 @@ index 379cc50..dda3f2b 100644
  		// Try string first ("*"), then array of methods
  		var star string
  		if err := json.Unmarshal(val, &star); err == nil {
-@@ -126,40 +135,71 @@ func loadConfig(path string) (Config, error) {
+@@ -127,40 +136,71 @@ func loadConfig(path string) (Config, error) {
  	return cfg, nil
  }
  
@@ -131,18 +131,23 @@ index 379cc50..dda3f2b 100644
  	if !ok {
  		return false
  	}
-@@ -318,8 +358,8 @@ func requestURLLength(req *http.Request) int {
- // applyFilters checks method, URL length, and WebSocket restrictions.
- // Returns an HTTP status code and reason if blocked, or 0 if allowed.
- // Callers must check isDomainAllowed first; this only applies per-request filters.
+@@ -334,13 +374,13 @@ func hasRequestBody(req *http.Request) bool {
+ // restrictions. Returns an HTTP status code and reason if blocked, or 0 if
+ // allowed. Callers must check isDomainAllowed first; this only applies
+ // per-request filters.
 -func applyFilters(req *http.Request, host string, cfg Config) (int, string) {
--	if !isMethodAllowed(host, req.Method, cfg) {
 +func applyFilters(req *http.Request, host, port string, cfg Config) (int, string) {
-+	if !isMethodAllowed(host, port, req.Method, cfg) {
+ 	// Normalise once and use the same value for every check below. Comparing
+ 	// the uppercased method against the policy but the raw one against the
+ 	// GET/HEAD checks let "-X get" satisfy a GET policy and then skip the
+ 	// restrictions that policy is supposed to carry.
+ 	normalizedMethod := strings.ToUpper(req.Method)
+-	if !isMethodAllowed(host, normalizedMethod, cfg) {
++	if !isMethodAllowed(host, port, normalizedMethod, cfg) {
  		return http.StatusForbidden, "method not allowed"
  	}
- 	// URL length is only enforced for GET/HEAD where the URL carries the
-@@ -390,34 +430,32 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
+ 	if requestURLLength(req) > maxURLBytes {
+@@ -471,34 +511,32 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
  	}
  
  	host := hostOnly(req.Host)
@@ -187,7 +192,16 @@ index 379cc50..dda3f2b 100644
  			fmt.Fprintf(os.Stderr, "%s blocked %s %s (%s, host: %s)\n",
  				time.Now().Format(time.RFC3339), req.Method, req.URL, reason, req.Host)
  			fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\n\r\n", code, http.StatusText(code))
-@@ -450,7 +488,7 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
+@@ -522,7 +560,7 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
+ 			// Same substitution as the redirect above, but with a vetted
+ 			// literal, so the transport dials the address that was checked
+ 			// instead of resolving the name a second time.
+-			vetted, err := resolveVetted(host, "80")
++			vetted, err := resolveVetted(host, port)
+ 			if err != nil {
+ 				code := dialFailureStatus(err)
+ 				fmt.Fprintf(os.Stderr, "%s blocked %s %s (%v)\n",
+@@ -547,7 +585,7 @@ func handle(conn net.Conn, cfg Config, ca *certAuthority, redirects Redirects) {
  	}
  }
  
@@ -196,7 +210,7 @@ index 379cc50..dda3f2b 100644
  	// Mint a certificate for this host
  	leafCert, err := ca.mintCert(host)
  	if err != nil {
-@@ -506,7 +544,7 @@ func handleMITM(clientConn net.Conn, host, hostPort string, cfg Config, ca *cert
+@@ -617,7 +655,7 @@ func handleMITM(clientConn net.Conn, host, hostPort string, cfg Config, ca *cert
  		}
  
  		// Apply filters to the decrypted request
@@ -205,3 +219,16 @@ index 379cc50..dda3f2b 100644
  			fmt.Fprintf(os.Stderr, "%s blocked %s https://%s%s (%s)\n",
  				time.Now().Format(time.RFC3339), req.Method, host, req.URL.Path, reason)
  			resp := &http.Response{
+diff --git a/proxy/main_test.go b/proxy/main_test.go
+index fd71aa4..4f0ae1d 100644
+--- a/proxy/main_test.go
++++ b/proxy/main_test.go
+@@ -192,7 +192,7 @@ func TestApplyFilters(t *testing.T) {
+ 	for _, c := range cases {
+ 		t.Run(c.name, func(t *testing.T) {
+ 			req := readRequest(t, c.raw)
+-			status, reason := applyFilters(req, "example.com", c.cfg)
++			status, reason := applyFilters(req, "example.com", "443", c.cfg)
+ 			if status != c.status {
+ 				t.Errorf("applyFilters = (%d, %q), want status %d", status, reason, c.status)
+ 			}

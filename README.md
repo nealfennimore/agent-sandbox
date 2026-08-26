@@ -58,7 +58,9 @@ The default shell (`nix develop`) provides all three launchers: `claude-vm`,
 The runner boots a minimal NixOS guest and attaches your terminal to its
 serial console. The guest logs in automatically as `root`, prints any
 share warnings, and launches the agent directly in `/workspace`. When
-the agent exits, the VM powers off and you are back on the host.
+the agent exits, the VM powers off and you are back on the host. To stop
+a wedged VM, press `Ctrl-a x` on the serial console, or kill the
+`microvm` process. There is no host control socket (see below).
 
 - The launch directory is shared read-write at `/workspace` in the guest.
 - Every directory and file that the sandbox declares (the agent defaults
@@ -117,12 +119,62 @@ Recorded tradeoffs:
   directory mounts read-write. The inner sandbox re-binds git metadata
   read-only, so the guest must always run the sandboxed wrapper, never
   the raw agent. The guest config only installs the wrapped shim.
+- The guest runs with no QMP control socket (`microvm.socket = null`).
+  The default socket is a relative path that would land in the
+  agent-writable workspace. The kiosk powers off from inside, so the
+  host-side `microvm-shutdown` command is unused. Removing the socket
+  keeps a control channel out of the workspace and off the host.
 
 Requirements: a Linux host with `/dev/kvm`. Without KVM, qemu falls back to
 slow software emulation. The VM outputs exist only on Linux systems.
 
 The `modules/microvm` submodule is a local reference copy of microvm.nix.
 The flake consumes the `microvm` flake input, not the submodule.
+
+### Security comparison
+
+| Property | Sandbox (`nix run .#claude`) | MicroVM (`nix run .#claude-vm`) |
+| --- | --- | --- |
+| Isolation boundary | Unprivileged namespaces: bubblewrap mount/user namespace, pasta network namespace | qemu/KVM hardware boundary, with the same namespace sandbox inside the guest |
+| Egress control | MITM proxy allowlist, enforced in the sandbox network namespace | The same allowlist, enforced by the inner sandbox inside the guest |
+| Kernel attack surface | Host kernel, reachable from sandboxed code | Guest kernel. The host kernel is reachable only through a VM escape |
+| Filesystem visible to the agent | Host filesystem per the sandbox bind configuration | Only the workspace, the declared sandbox paths, and the nix store. The rest of the host does not exist in the guest |
+| Write blast radius | The declared read/write dirs and files on the host | The same declared paths, written through 9p as the launching user |
+| Git metadata (`.git`, config, hooks) | Re-bound read-only by the sandbox | Re-bound read-only by the inner sandbox — this protection comes from the sandbox layer, not the VM |
+| Host environment variables | Passed through as `"$VAR"` runtime references | Do not cross the VM boundary. Login state travels through the shared directories |
+| Consequence of a sandbox escape | Code runs as your user on the host | Code runs as guest root inside a disposable VM. Host reach is limited to the shared paths, as your user |
+
+### Threat model
+
+The threat is a compromised agent that runs attacker-chosen commands,
+for example after a prompt injection. The stack stops these attacks:
+
+- Exfiltration to arbitrary endpoints. Egress only reaches the
+  allowlisted domains, with per-method rules.
+- Credential harvesting. Paths outside the declared set (`~/.ssh`,
+  `~/.aws`, browser profiles) do not exist in the guest. Host
+  environment variables do not cross the VM boundary.
+- Code execution on the host through git metadata. The sandbox binds
+  `.git`, `.git/config`, and `.git/hooks` read-only.
+- Persistence. Shell rc files, crontabs, and service units are not
+  reachable. The guest is ephemeral and powers off after the session.
+- Escalation to the host through a kernel exploit. A namespace escape
+  lands in a disposable guest. The attacker still needs a separate
+  qemu/KVM escape to reach the host.
+- Reaching the LAN or host-local services. Traffic exits only through
+  the proxy, to allowlisted hosts.
+- Supply-chain payloads, for example a malicious `npm postinstall`.
+  They run inside the same confinement as the agent.
+
+These attacks stay possible:
+
+- Damage to the shared paths: the workspace and the declared
+  read/write directories.
+- Exfiltration through allowed channels, including the agent's own
+  credentials in its shared config directory.
+- Malicious code planted in the repository and later executed on the
+  host or in CI. Review changes before you run them outside the VM.
+- A qemu/KVM zero-day.
 
 ### VM builders
 

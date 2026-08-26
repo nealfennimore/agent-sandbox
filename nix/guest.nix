@@ -170,6 +170,14 @@ in
   microvm = {
     hypervisor = "qemu";
     inherit (cfg) vcpu mem;
+    # No QMP control socket. The default is a relative path, so the
+    # socket would land in the launch directory, which is the
+    # agent-writable workspace. The kiosk powers the guest off from
+    # inside, so host-side microvm-shutdown is unused. Dropping the
+    # socket removes the file and the control channel entirely. Stop a
+    # wedged VM with "Ctrl-a x" on the serial console, or by killing
+    # the microvm process.
+    socket = null;
     # Create missing host-side share sources before the VM starts, so
     # qemu does not fail on a first run.
     preStart = lib.concatMapStrings (s: ''
