@@ -38,6 +38,7 @@
           inherit system;
           config.allowUnfree = true;
         };
+        lib = nixpkgs.lib;
         # agent-sandbox.nix builds its MITM proxy from its own source tree and
         # exposes no override for it. The patch teaches that proxy to accept a
         # port in an allowlist key ("host:port"). Upstream accepts port 443 for
@@ -84,35 +85,16 @@
           ];
         };
 
-        # Builders that accept an overridable host-origin allowlist plus
-        # append-style extensions for packages and read/write paths.
-        # Downstream flakes call these via `lib.${system}`:
-        #   - allowedDomains: replace wholesale, or `//`-merge onto the
-        #     exported `agentDomains` default.
-        #   - extraPackages / extraRwDirs / extraRwFiles: lists appended
-        #     onto the built-in defaults.
-        #   - extraEnv: attrset `//`-merged onto the default env (later
-        #     keys win, so it can also override defaults).
-        mkClaudeSandbox =
-          {
-            claude-code ? pkgs.claude-code,
-            allowedDomains ? agentDomains,
-            extraPackages ? [ ],
-            extraRwDirs ? [ ],
-            extraRoDirs ? [ ],
-            extraRwFiles ? [ ],
-            extraRoFiles ? [ ],
-            extraEnv ? { },
-          }:
-          sbx.mkSandbox {
-            pkg = claude-code;
+        # Everything that differs between the agents, in one place. The
+        # public builders below are partial applications over these
+        # descriptors, so a downstream flake can add a new agent by calling
+        # mkAgentSandbox / mkAgentVm with its own descriptor.
+        agents = {
+          claude = {
             binName = "claude";
-            outName = "claude";
-            allowedPackages = sbx.commonTools ++ extraPackages;
-            rwDirs = [ "$HOME/.claude" ] ++ extraRwDirs;
-            rwFiles = [ ] ++ extraRwFiles;
-            roDirs = [ ] ++ extraRoDirs;
-            roFiles = [ ] ++ extraRoFiles;
+            package = pkgs.claude-code;
+            baseDomains = baseDomains;
+            rwDirs = [ "$HOME/.claude" ];
             # Bind host gitconfig read-only for git identity (optional):
             # roFiles = [ "$HOME/.config/git/config" ];
             env = {
@@ -121,81 +103,166 @@
               CLAUDE_CODE_OAUTH_TOKEN = "$CLAUDE_CODE_OAUTH_TOKEN";
               GITHUB_TOKEN = "$GITHUB_TOKEN";
               CLAUDE_CONFIG_DIR = "$HOME/.claude";
-            }
-            // extraEnv;
-            allowedDomains = allowedDomains // baseDomains;
+            };
           };
-
-        mkOpencodeSandbox =
-          {
-            opencode ? pkgs.opencode,
-            allowedDomains ? agentDomains,
-            extraPackages ? [ ],
-            extraRwDirs ? [ ],
-            extraRoDirs ? [ ],
-            extraRwFiles ? [ ],
-            extraRoFiles ? [ ],
-            extraEnv ? { },
-          }:
-          sbx.mkSandbox {
-            pkg = opencode;
+          opencode = {
             binName = "opencode";
-            outName = "opencode";
-            allowedPackages = sbx.commonTools ++ extraPackages;
+            package = pkgs.opencode;
+            baseDomains = baseDomains;
             rwDirs = [
               "$HOME/.config/opencode"
               "$HOME/.local/share/opencode"
               "$HOME/.local/state/opencode"
-            ]
-            ++ extraRwDirs;
-            rwFiles = [ ] ++ extraRwFiles;
-            roDirs = [ ] ++ extraRoDirs;
-            roFiles = [ ] ++ extraRoFiles;
-            env = {
-              # Add whatever provider key opencode is configured to use, e.g.:
-              # ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
-            }
-            // extraEnv;
-            allowedDomains = allowedDomains // baseDomains;
+            ];
+            # Add whatever provider key opencode is configured to use via
+            # extraEnv, e.g. ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
+            env = { };
           };
-
-        mkCodexSandbox =
-          {
-            codex ? pkgs.codex,
-            allowedDomains ? agentDomains,
-            extraPackages ? [ ],
-            extraRwDirs ? [ ],
-            extraRoDirs ? [ ],
-            extraRwFiles ? [ ],
-            extraRoFiles ? [ ],
-            extraEnv ? { },
-          }:
-          sbx.mkSandbox {
-            pkg = codex;
+          codex = {
             binName = "codex";
-            outName = "codex";
-            allowedPackages = sbx.commonTools ++ extraPackages;
-            rwDirs = [ "$HOME/.codex" ] ++ extraRwDirs;
-            rwFiles = [ ] ++ extraRwFiles;
-            roDirs = [ ] ++ extraRoDirs;
-            roFiles = [ ] ++ extraRoFiles;
+            package = pkgs.codex;
+            baseDomains = codexBaseDomains;
+            rwDirs = [ "$HOME/.codex" ];
             env = {
-              # Secrets are passed as runtime shell-var references so they
-              # expand in the shell, never landing in the /nix/store.
               OPENAI_API_KEY = "$OPENAI_API_KEY";
               GITHUB_TOKEN = "$GITHUB_TOKEN";
               CODEX_HOME = "$HOME/.codex";
-            }
-            // extraEnv;
-            allowedDomains = allowedDomains // codexBaseDomains;
+            };
           };
+        };
+
+        # The user-facing sandbox interface, defined as a module so every
+        # knob is a typed option with a default. An unknown or mistyped
+        # attribute fails evaluation with the offending option path.
+        # Semantics per option:
+        #   - allowedDomains: replace wholesale, or `//`-merge onto the
+        #     exported `agentDomains` default. The agent base domains are
+        #     always merged on top.
+        #   - extraPackages / extraR{w,o}{Dirs,Files}: lists appended
+        #     onto the built-in defaults.
+        #   - extraEnv: attrset `//`-merged onto the default env (later
+        #     keys win, so it can also override defaults).
+        sandboxModule = agent: {
+          options = {
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = agent.package;
+              description = "Agent package to wrap.";
+            };
+            allowedDomains = lib.mkOption {
+              type = with lib.types; attrsOf (either str (listOf str));
+              default = agentDomains;
+              description = "Host-origin allowlist. \"*\" or a list of HTTP methods per key.";
+            };
+            extraPackages = lib.mkOption {
+              type = with lib.types; listOf package;
+              default = [ ];
+              description = "Packages appended onto agent-sandbox commonTools.";
+            };
+            extraRwDirs = lib.mkOption {
+              type = with lib.types; listOf str;
+              default = [ ];
+              description = "Read/write directories appended onto the defaults.";
+            };
+            extraRoDirs = lib.mkOption {
+              type = with lib.types; listOf str;
+              default = [ ];
+              description = "Read-only directories appended onto the defaults.";
+            };
+            extraRwFiles = lib.mkOption {
+              type = with lib.types; listOf str;
+              default = [ ];
+              description = "Read/write files appended onto the defaults.";
+            };
+            extraRoFiles = lib.mkOption {
+              type = with lib.types; listOf str;
+              default = [ ];
+              description = "Read-only files appended onto the defaults.";
+            };
+            extraEnv = lib.mkOption {
+              type = with lib.types; attrsOf str;
+              default = { };
+              description = "Environment merged onto the agent default env. Keys here win.";
+            };
+          };
+        };
+
+        # Build the wrapper from an agent descriptor and an evaluated
+        # sandbox config (the submodule output, or evalSandbox below).
+        buildSandbox =
+          agent: cfg:
+          sbx.mkSandbox {
+            pkg = cfg.package;
+            binName = agent.binName;
+            outName = agent.binName;
+            allowedPackages = sbx.commonTools ++ cfg.extraPackages;
+            rwDirs = agent.rwDirs ++ cfg.extraRwDirs;
+            rwFiles = cfg.extraRwFiles;
+            roDirs = cfg.extraRoDirs;
+            roFiles = cfg.extraRoFiles;
+            env = agent.env // cfg.extraEnv;
+            allowedDomains = cfg.allowedDomains // agent.baseDomains;
+          };
+
+        evalSandbox =
+          agent: config:
+          (lib.evalModules {
+            modules = [
+              (sandboxModule agent)
+              config
+            ];
+          }).config;
+
+        mkAgentSandbox = agent: config: buildSandbox agent (evalSandbox agent config);
+
+        mkClaudeSandbox = mkAgentSandbox agents.claude;
+        mkOpencodeSandbox = mkAgentSandbox agents.opencode;
+        mkCodexSandbox = mkAgentSandbox agents.codex;
 
         claude-sandboxed = mkClaudeSandbox { };
         opencode-sandboxed = mkOpencodeSandbox { };
         codex-sandboxed = mkCodexSandbox { };
 
         # MicroVM outputs only make sense for Linux guests.
-        isLinux = nixpkgs.lib.hasSuffix "-linux" system;
+        isLinux = lib.hasSuffix "-linux" system;
+
+        # The VM interface, also defined as a module. `sandbox` embeds the
+        # sandbox interface as a submodule, so one nested attrset configures
+        # the agent that runs inside the guest.
+        vmModule = agent: {
+          options = {
+            sandbox = lib.mkOption {
+              type = lib.types.submodule (sandboxModule agent);
+              default = { };
+              description = "Sandbox configuration for the agent inside the guest.";
+            };
+            vcpu = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 2;
+              description = "Number of virtual CPU cores.";
+            };
+            mem = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 4096;
+              description = "Guest RAM in MiB.";
+            };
+            workspace = lib.mkOption {
+              type = lib.types.str;
+              default = ".";
+              description = "Host path shared at /workspace. A relative path resolves against the runtime working directory.";
+            };
+            homeImageSize = lib.mkOption {
+              type = lib.types.ints.positive;
+              default = 2048;
+              description = "Size in MiB of the persistent /home image.";
+            };
+            extraModules = lib.mkOption {
+              type = with lib.types; listOf deferredModule;
+              default = [ ];
+              description = "Extra NixOS modules merged into the guest.";
+            };
+          };
+        };
 
         # Wrap a sandboxed agent in a qemu microVM. The netns/proxy sandbox
         # runs inside the guest, so the egress allowlist still applies. The
@@ -208,16 +275,19 @@
         # environment variables do not cross the VM boundary — log the agent
         # in once inside the guest instead.
         mkAgentVm =
-          {
-            name, # "claude" | "opencode" | "codex"
-            agent, # the sandboxed wrapper package to install in the guest
-            vcpu ? 2,
-            mem ? 4096, # MiB
-            workspace ? ".", # host path; relative resolves against runtime CWD
-            homeImageSize ? 2048, # MiB
-            extraModules ? [ ], # extra NixOS modules merged into the guest
-          }:
-          (nixpkgs.lib.nixosSystem {
+          agent: config:
+          let
+            cfg =
+              (lib.evalModules {
+                modules = [
+                  (vmModule agent)
+                  config
+                ];
+              }).config;
+            name = agent.binName;
+            sandboxed-agent = buildSandbox agent cfg.sandbox;
+          in
+          (lib.nixosSystem {
             inherit system;
             modules = [
               microvm.nixosModules.microvm
@@ -238,11 +308,11 @@
                   # Land in the shared workspace on login.
                   environment.loginShellInit = "cd /workspace 2>/dev/null || true";
 
-                  environment.systemPackages = [ agent ];
+                  environment.systemPackages = [ sandboxed-agent ];
 
                   microvm = {
                     hypervisor = "qemu";
-                    inherit vcpu mem;
+                    inherit (cfg) vcpu mem;
                     # SLiRP user networking: no root or host setup required.
                     interfaces = [
                       {
@@ -260,7 +330,7 @@
                       }
                       {
                         tag = "workspace";
-                        source = workspace;
+                        source = cfg.workspace;
                         mountPoint = "/workspace";
                         proto = "9p";
                       }
@@ -270,80 +340,19 @@
                       {
                         image = "${name}-vm-home.img";
                         mountPoint = "/home";
-                        size = homeImageSize;
+                        size = cfg.homeImageSize;
                       }
                     ];
                   };
                 }
               )
             ]
-            ++ extraModules;
+            ++ cfg.extraModules;
           }).config.microvm.declaredRunner;
 
-        # Per-agent VM builders. `sandbox` takes the same arguments as the
-        # corresponding mk*Sandbox builder; the rest are mkAgentVm knobs.
-        mkClaudeVm =
-          {
-            sandbox ? { },
-            vcpu ? 2,
-            mem ? 4096,
-            workspace ? ".",
-            homeImageSize ? 2048,
-            extraModules ? [ ],
-          }:
-          mkAgentVm {
-            name = "claude";
-            agent = mkClaudeSandbox sandbox;
-            inherit
-              vcpu
-              mem
-              workspace
-              homeImageSize
-              extraModules
-              ;
-          };
-
-        mkOpencodeVm =
-          {
-            sandbox ? { },
-            vcpu ? 2,
-            mem ? 4096,
-            workspace ? ".",
-            homeImageSize ? 2048,
-            extraModules ? [ ],
-          }:
-          mkAgentVm {
-            name = "opencode";
-            agent = mkOpencodeSandbox sandbox;
-            inherit
-              vcpu
-              mem
-              workspace
-              homeImageSize
-              extraModules
-              ;
-          };
-
-        mkCodexVm =
-          {
-            sandbox ? { },
-            vcpu ? 2,
-            mem ? 4096,
-            workspace ? ".",
-            homeImageSize ? 2048,
-            extraModules ? [ ],
-          }:
-          mkAgentVm {
-            name = "codex";
-            agent = mkCodexSandbox sandbox;
-            inherit
-              vcpu
-              mem
-              workspace
-              homeImageSize
-              extraModules
-              ;
-          };
+        mkClaudeVm = mkAgentVm agents.claude;
+        mkOpencodeVm = mkAgentVm agents.opencode;
+        mkCodexVm = mkAgentVm agents.codex;
 
         claude-vm = mkClaudeVm { };
         opencode-vm = mkOpencodeVm { };
@@ -362,7 +371,7 @@
         opencode-vm-launcher = mkVmLauncher "opencode" opencode-vm;
         codex-vm-launcher = mkVmLauncher "codex" codex-vm;
 
-        onLinux = nixpkgs.lib.optionals isLinux;
+        onLinux = lib.optionals isLinux;
       in
       {
         # Reusable builders for downstream flakes. See README.md for the
@@ -379,12 +388,13 @@
         lib = {
           inherit
             agentDomains
+            mkAgentSandbox
             mkClaudeSandbox
             mkOpencodeSandbox
             mkCodexSandbox
             ;
         }
-        // nixpkgs.lib.optionalAttrs isLinux {
+        // lib.optionalAttrs isLinux {
           inherit
             mkAgentVm
             mkClaudeVm
@@ -422,7 +432,7 @@
           opencode = opencode-sandboxed;
           codex = codex-sandboxed;
         }
-        // nixpkgs.lib.optionalAttrs isLinux {
+        // lib.optionalAttrs isLinux {
           inherit claude-vm opencode-vm codex-vm;
         };
       }

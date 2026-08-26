@@ -1,3 +1,5 @@
 .direnv
 .claude
 result
+*.img
+*.sock

@@ -65,17 +65,21 @@ The flake consumes the `microvm` flake input, not the submodule.
 ### VM builders
 
 On Linux systems, `lib.${system}` also exports `mkAgentVm` and the per-agent
-builders `mkClaudeVm`, `mkOpencodeVm`, and `mkCodexVm`. The per-agent
-builders accept these optional arguments:
+builders `mkClaudeVm`, `mkOpencodeVm`, and `mkCodexVm`. Like the sandbox
+builders, the VM builders evaluate their argument with the NixOS module
+system, so every option is typed and checked. The options are:
 
-| Argument | Default | Semantics |
+| Option | Default | Semantics |
 | --- | --- | --- |
-| `sandbox` | `{ }` | Arguments passed to the matching `mk*Sandbox` builder. |
+| `sandbox` | `{ }` | Submodule with the sandbox options above. Configures the agent that runs inside the guest. |
 | `vcpu` | `2` | Number of virtual CPU cores. |
 | `mem` | `4096` | Guest RAM in MiB. |
 | `workspace` | `"."` | Host path shared at `/workspace`. A relative path resolves against the runtime working directory. |
 | `homeImageSize` | `2048` | Size in MiB of the persistent `/home` image. |
 | `extraModules` | `[ ]` | Extra NixOS modules merged into the guest. |
+
+`mkAgentVm` is the generic form. It takes the same agent descriptor as
+`mkAgentSandbox`, then the VM options: `mkAgentVm descriptor config`.
 
 Example with a customized sandbox and a forwarded port:
 
@@ -105,17 +109,40 @@ flake can extend the sandbox without forking it:
 | `lib.${system}.mkClaudeSandbox` | Builder for the Claude sandbox |
 | `lib.${system}.mkOpencodeSandbox` | Builder for the OpenCode sandbox |
 | `lib.${system}.mkCodexSandbox` | Builder for the Codex sandbox |
+| `lib.${system}.mkAgentSandbox` | Generic builder. Takes an agent descriptor and a sandbox config. |
 | `lib.${system}.agentDomains` | The default host-origin allowlist (an attrset), exported so you can merge onto it |
 
-Each builder accepts these optional arguments:
+The builders evaluate their argument with the NixOS module system. Each
+argument is a typed option with a default. An unknown or mistyped argument
+fails evaluation with the offending option path.
 
-| Argument | Default | Semantics |
+Each builder accepts these options:
+
+| Option | Default | Semantics |
 | --- | --- | --- |
+| `package` | the agent package from nixpkgs | **Replace.** The agent package to wrap. |
 | `allowedDomains` | `agentDomains` | **Replace.** The host-origin allowlist. Pass a new attrset, or `//`-merge onto `agentDomains`. |
 | `extraPackages` | `[ ]` | **Append.** Extra packages added onto the built-in tool set (`agent-sandbox`'s `commonTools`). |
 | `extraRwDirs` | `[ ]` | **Append.** Extra read/write directories added onto the defaults. |
+| `extraRoDirs` | `[ ]` | **Append.** Extra read-only directories added onto the defaults. |
 | `extraRwFiles` | `[ ]` | **Append.** Extra read/write files added onto the defaults. |
+| `extraRoFiles` | `[ ]` | **Append.** Extra read-only files added onto the defaults. |
 | `extraEnv` | `{ }` | **Merge.** Attrset `//`-merged onto the default env. Keys here win, so it can also override a default. |
+
+`mkAgentSandbox` builds a sandbox for an agent this flake does not know
+about. The descriptor holds what differs between agents:
+
+```nix
+agentbox.lib.${system}.mkAgentSandbox {
+  binName = "aider";
+  package = pkgs.aider-chat;
+  baseDomains = { "openai.com" = "*"; };
+  rwDirs = [ "$HOME/.aider" ];
+  env = { OPENAI_API_KEY = "$OPENAI_API_KEY"; };
+} {
+  extraPackages = [ pkgs.ripgrep ];
+}
+```
 
 `allowedDomains` and `extraEnv` are attrsets: `allowedDomains` **replaces** the
 whole allowlist (merge with `//` to keep the defaults), while `extraEnv`
