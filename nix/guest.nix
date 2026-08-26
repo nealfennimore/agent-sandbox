@@ -49,17 +49,26 @@ in
   # the host user that launched the VM: its writes execute host-side as
   # that user, and host file ownership stays unchanged.
   services.getty.autologinUser = guestUser;
+  # The VM is serial-console only (-nographic): a getty on the virtual
+  # console would autologin too, run the kiosk with no real terminal,
+  # fail, and power the VM off from under the serial session.
+  systemd.services."getty@tty1".enable = false;
+  systemd.services."autovt@tty1".enable = false;
   # Kiosk console: surface share warnings, then launch the agent in
   # the shared workspace. When the agent exits, the VM powers off —
-  # the guest is not meant to be explored interactively.
+  # the guest is not meant to be explored interactively. Gate on the
+  # serial console so no other login path can trigger the kiosk.
   environment.loginShellInit = ''
-    if [ -s /run/agent-sandbox/warnings ]; then
-      cat /run/agent-sandbox/warnings
+    case "$(tty)" in /dev/ttyS0 | /dev/ttyAMA0 | /dev/hvc0) kiosk=1 ;; *) kiosk= ;; esac
+    if [ -n "$kiosk" ]; then
+      if [ -s /run/agent-sandbox/warnings ]; then
+        cat /run/agent-sandbox/warnings
+      fi
+      cd /workspace 2>/dev/null || true
+      ${agentLauncher}/bin/${name}
+      echo "${name} exited; powering off"
+      poweroff
     fi
-    cd /workspace 2>/dev/null || true
-    ${agentLauncher}/bin/${name}
-    echo "${name} exited; powering off"
-    poweroff
   '';
 
   # Install only the shim-wrapped, sandboxed agent. Never install the
@@ -112,8 +121,12 @@ in
     wantedBy = [ "multi-user.target" ];
     after = [ "local-fs.target" ];
     # Warnings must be written and files staged before the console
-    # logs in and launches the agent.
-    before = [ "serial-getty@ttyS0.service" ];
+    # logs in and launches the agent. Ordering against a getty unit
+    # that does not exist on this arch is ignored, so list both.
+    before = [
+      "serial-getty@ttyS0.service"
+      "serial-getty@ttyAMA0.service"
+    ];
     path = [ pkgs.util-linux ];
     serviceConfig = {
       Type = "oneshot";
