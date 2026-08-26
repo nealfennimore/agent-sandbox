@@ -1,3 +1,6 @@
 [submodule "modules/microvm"]
 	path = modules/microvm
 	url = https://github.com/microvm-nix/microvm.nix
+[submodule "modules/archie-judd-agent-sandbox"]
+	path = modules/archie-judd-agent-sandbox
+	url = https://github.com/archie-judd/agent-sandbox.nix.git
