@@ -145,25 +145,25 @@ rec {
     lib.warnIf (rwFiles != [ ])
       "agent-sandbox VM (${agent.binName}): the VM version has no read/write files. Declared rwFiles (${lib.concatStringsSep ", " rwFiles}) become read-only snapshots, and guest writes to them are lost at shutdown."
       (lib.nixosSystem {
-      inherit system;
-      modules = [
-        microvm.nixosModules.microvm
-        (import ./guest.nix {
-          name = agent.binName;
-          agentPackage = sandbox.buildSandbox agent cfg.sandbox;
-          sandboxShares = sandboxShares agent cfg.sandbox;
-          inherit cfg guestUser;
-        })
-      ]
-      ++ cfg.extraModules;
-    }).config.microvm.declaredRunner;
+        inherit system;
+        modules = [
+          microvm.nixosModules.microvm
+          (import ./guest.nix {
+            name = agent.binName;
+            agentPackage = sandbox.buildSandbox agent cfg.sandbox;
+            sandboxShares = sandboxShares agent cfg.sandbox;
+            inherit cfg guestUser;
+          })
+        ]
+        ++ cfg.extraModules;
+      }).config.microvm.declaredRunner;
 
   # Every microvm runner exposes the same bin/microvm-run, so the
   # runners cannot share a dev shell PATH directly. Wrap each runner
   # in a launcher with a distinct name (claude-vm, opencode-vm, ...).
   mkVmLauncher =
     name: runner:
-    pkgs.writeShellScriptBin "${name}-vm" ''
+    pkgs.writeShellScriptBin "${name}" ''
       exec ${runner}/bin/microvm-run "$@"
     '';
 }

@@ -194,6 +194,19 @@ system, so every option is typed and checked. The options are:
 `mkAgentVm` is the generic form. It takes the same agent descriptor as
 `mkAgentSandbox`, then the VM options: `mkAgentVm descriptor config`.
 
+`mkVmLauncher name runner` wraps a VM runner in a launcher binary named
+`name`. The name is used verbatim. Every runner exposes the same
+`bin/microvm-run`, so the wrapper is what puts a VM on a PATH under its
+own command name:
+
+```nix
+devShells.${system}.default = pkgs.mkShell {
+  packages = [
+    (agentbox.lib.${system}.mkVmLauncher "claude-vm" claude-vm)
+  ];
+};
+```
+
 See "Example downstream flake with a VM" below for a complete consumer
 flake, with launcher wrapping and kiosk override included.
 
@@ -231,7 +244,7 @@ flake can extend the sandbox without forking it:
 | `lib.${system}.mkOpencodeVm` | Builder for the OpenCode microVM (Linux systems only) |
 | `lib.${system}.mkCodexVm` | Builder for the Codex microVM (Linux systems only) |
 | `lib.${system}.mkAgentVm` | Generic VM builder. Takes an agent descriptor and a VM config (Linux systems only) |
-| `lib.${system}.mkVmLauncher` | Wraps a VM runner in a launcher with a distinct name for dev shells (Linux systems only) |
+| `lib.${system}.mkVmLauncher` | Wraps a VM runner in a launcher binary with the given name, to put the VM on a dev shell or system PATH (Linux systems only) |
 
 The builders evaluate their argument with the NixOS module system. Each
 argument is a typed option with a default. An unknown or mistyped argument
@@ -422,9 +435,10 @@ directory.
       packages.${system}.claude-vm = claude-vm;
 
       # Every VM runner exposes the same bin/microvm-run, so wrap each
-      # runner with mkVmLauncher when a dev shell holds more than one.
+      # runner with mkVmLauncher to put it on the PATH under its own
+      # name. The name is used verbatim: this launcher is `claude-vm`.
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ (box.mkVmLauncher "claude" claude-vm) ];
+        packages = [ (box.mkVmLauncher "claude-vm" claude-vm) ];
       };
     };
 }

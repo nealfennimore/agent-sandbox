@@ -88,9 +88,9 @@
         opencode-vm = mkOpencodeVm { };
         codex-vm = mkCodexVm { };
 
-        claude-vm-launcher = mkVmLauncher "claude" claude-vm;
-        opencode-vm-launcher = mkVmLauncher "opencode" opencode-vm;
-        codex-vm-launcher = mkVmLauncher "codex" codex-vm;
+        claude-vm-launcher = mkVmLauncher "claude-vm" claude-vm;
+        opencode-vm-launcher = mkVmLauncher "opencode-vm" opencode-vm;
+        codex-vm-launcher = mkVmLauncher "codex-vm" codex-vm;
 
         onLinux = lib.optionals isLinux;
       in
