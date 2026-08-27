@@ -1,0 +1,22 @@
+diff --git a/lib/stub.sh b/lib/stub.sh
+index d36e79b..d62619d 100644
+--- a/lib/stub.sh
++++ b/lib/stub.sh
+@@ -46,16 +46,12 @@ source "@envFragment@"
+ 
+ if ((${#UNRESOLVED[@]})); then
+   {
+-    echo "@errorPrefix@ could not resolve these env values:"
++    echo "@errorPrefix@ could not resolve these env values (launching without them):"
+     echo
+     for entry in "${UNRESOLVED[@]}"; do
+       echo "  $entry"
+     done
+-    echo
+-    echo "Each value is a shell expression evaluated at launch, so anything it"
+-    echo "references must be set in the shell you launch from."
+   } >&2
+-  exit 1
+ fi
+ 
+ # Exported rather than set per command, so the entry point that runs inside

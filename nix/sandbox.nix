@@ -16,7 +16,14 @@ rec {
   sbxSrc = pkgs.applyPatches {
     name = "agent-sandbox-patched";
     src = agent-sandbox;
-    patches = [ ../patches/proxy-ports.patch ];
+    patches = [
+      ../patches/proxy-ports.patch
+      # Upstream v3 refuses to launch when a declared env expression
+      # references an unset variable. This patch downgrades that to a
+      # warning: the variable is skipped and the agent falls back to its
+      # own stored credentials. See patches/unresolved-env-warn.patch.
+      ../patches/unresolved-env-warn.patch
+    ];
   };
   sbx = import sbxSrc { inherit pkgs; };
 
