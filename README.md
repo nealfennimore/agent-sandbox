@@ -254,7 +254,7 @@ Each builder accepts these options:
 
 | Option | Default | Semantics |
 | --- | --- | --- |
-| `package` | the agent package from nixpkgs | **Replace.** The agent package to wrap. |
+| `package` | the agent package from nixpkgs | **Replace.** The agent package to wrap. `pkg` is an accepted alias. |
 | `allowedDomains` | `agentDomains` | **Replace.** The host-origin allowlist. Pass a new attrset, or `//`-merge onto `agentDomains`. |
 | `extraPackages` | `[ ]` | **Append.** Extra packages added onto the built-in tool set (`agent-sandbox`'s `commonTools`). |
 | `extraRwDirs` | `[ ]` | **Append.** Extra read/write directories added onto the defaults. |

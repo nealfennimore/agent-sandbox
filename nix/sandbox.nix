@@ -18,7 +18,7 @@ rec {
     src = agent-sandbox;
     patches = [
       ../patches/proxy-ports.patch
-      # Upstream v3 refuses to launch when a declared env expression
+      # Upstream (v3 through v5.2.9) refuses to launch when a declared env expression
       # references an unset variable. This patch downgrades that to a
       # warning: the variable is skipped and the agent falls back to its
       # own stored credentials. See patches/unresolved-env-warn.patch.
@@ -39,6 +39,10 @@ rec {
   #   - extraEnv: attrset `//`-merged onto the default env (later
   #     keys win, so it can also override defaults).
   sandboxModule = agent: {
+    # `pkg` is an accepted alias for `package`. The alias applies to
+    # every user of this module: the host sandboxes and the VM
+    # `sandbox` submodule.
+    imports = [ (lib.mkAliasOptionModule [ "pkg" ] [ "package" ]) ];
     options = {
       package = lib.mkOption {
         type = lib.types.package;
