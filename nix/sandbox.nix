@@ -18,7 +18,7 @@ rec {
     src = agent-sandbox;
     patches = [
       ../patches/proxy-ports.patch
-      # Upstream (v3 through v5.2.9) refuses to launch when a declared env expression
+      # Upstream (v3 through v5.6.3) refuses to launch when a declared env expression
       # references an unset variable. This patch downgrades that to a
       # warning: the variable is skipped and the agent falls back to its
       # own stored credentials. See patches/unresolved-env-warn.patch.
@@ -26,6 +26,37 @@ rec {
     ];
   };
   sbx = import sbxSrc { inherit pkgs; };
+
+  # One entry of publishedPorts in its long form. A bare port number is
+  # also accepted; bindAddr defaults here instead.
+  publishedPortModule = {
+    options = {
+      port = lib.mkOption {
+        type = lib.types.ints.between 1 65535;
+        description = "TCP port forwarded into the sandbox. The number is the same on both sides.";
+      };
+      bindAddr = lib.mkOption {
+        type = lib.types.str;
+        default = "127.0.0.1";
+        description = "IPv4 address the forward listens on, outside the sandbox.";
+      };
+    };
+  };
+
+  # Reduce either entry form to the long form, so a caller that acts on
+  # the port and the address reads one shape. nix/vm.nix uses this to
+  # build the qemu forwards.
+  normalizePublishedPort =
+    entry:
+    if builtins.isInt entry then
+      {
+        port = entry;
+        bindAddr = "127.0.0.1";
+      }
+    else
+      {
+        inherit (entry) port bindAddr;
+      };
 
   # The user-facing sandbox interface, defined as a module so every
   # knob is a typed option with a default. An unknown or mistyped
@@ -36,6 +67,9 @@ rec {
   #     always merged on top.
   #   - extraPackages / extraR{w,o}{Dirs,Files}: lists appended
   #     onto the built-in defaults.
+  #   - allowNix / allowUnixSockets / allowHeadlessBrowsers /
+  #     allowedHostPorts / publishedPorts: passed to agent-sandbox.nix
+  #     unchanged. See its README for the semantics of each.
   #   - extraEnv: attrset `//`-merged onto the default env (later
   #     keys win, so it can also override defaults).
   sandboxModule = agent: {
@@ -53,6 +87,33 @@ rec {
         type = with lib.types; attrsOf (either str (listOf str));
         default = domains.agentDomains;
         description = "Host-origin allowlist. \"*\" or a list of HTTP methods per key.";
+      };
+      allowNix = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Expose the host nix daemon socket and the whole nix store, and add pkgs.nix to PATH. Requires allowUnixSockets = true and a running nix-daemon. The microVM builders drop this option: the guest runs no nix daemon.";
+      };
+      allowUnixSockets = lib.mkOption {
+        type = lib.types.bool;
+        default = false;
+        description = "Permit AF_UNIX sockets. The agent connects in directories it can read, and binds in directories it can write.";
+      };
+      allowHeadlessBrowsers = lib.mkOption {
+        type = with lib.types; listOf (enum [ "chromium" "firefox" ]);
+        default = [ ];
+        description = "Headless browser engines the sandbox accommodates. On Linux this requires allowUnixSockets = true. Put the browser and its driver in extraPackages.";
+      };
+      allowedHostPorts = lib.mkOption {
+        type = with lib.types; nullOr (listOf (ints.between 1 65535));
+        default = [ ];
+        description = "Host-local TCP ports the sandbox can reach. null allows every host-local TCP port. In the microVM these are the guest's own ports, not the host's.";
+      };
+      publishedPorts = lib.mkOption {
+        type =
+          with lib.types;
+          listOf (either (ints.between 1 65535) (submodule publishedPortModule));
+        default = [ ];
+        description = "TCP ports forwarded into the sandbox, so a service the agent runs is reachable from outside. An entry is a port number, which binds 127.0.0.1, or { port, bindAddr }.";
       };
       extraPackages = lib.mkOption {
         type = with lib.types; listOf package;
@@ -102,6 +163,13 @@ rec {
       roFiles = (agent.roFiles or [ ]) ++ cfg.extraRoFiles;
       env = agent.env // cfg.extraEnv;
       allowedDomains = cfg.allowedDomains // agent.baseDomains;
+      inherit (cfg)
+        allowNix
+        allowUnixSockets
+        allowHeadlessBrowsers
+        allowedHostPorts
+        publishedPorts
+        ;
     };
 
   evalSandbox =

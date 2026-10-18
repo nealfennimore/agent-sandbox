@@ -1,5 +1,5 @@
 diff --git a/lib/stub.sh b/lib/stub.sh
-index ad8d423..6d85572 100644
+index 80e1b77..d3c6e31 100644
 --- a/lib/stub.sh
 +++ b/lib/stub.sh
 @@ -28,16 +28,12 @@ source "@envFragment@"
@@ -19,4 +19,4 @@ index ad8d423..6d85572 100644
 -  exit 1
  fi
  
- # Exported so the entry point inside pasta's namespace inherits it too;
+ # bash sets PWD but does not export it, and the default workspaceDir is

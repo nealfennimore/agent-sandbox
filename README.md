@@ -131,6 +131,26 @@ slow software emulation. The VM outputs exist only on Linux systems.
 The `modules/microvm` submodule is a local reference copy of microvm.nix.
 The flake consumes the `microvm` flake input, not the submodule.
 
+### Published ports inside the VM
+
+`publishedPorts` works in the VM too. The VM adds the qemu half of the
+path:
+
+- qemu forwards the host port into the guest with SLiRP. `bindAddr` is
+  the host address that qemu listens on. The default is `127.0.0.1`.
+- Inside the guest, the sandbox publishes the same port on `0.0.0.0`.
+  qemu delivers a forwarded connection to the guest SLiRP address, never
+  to guest `127.0.0.1`.
+- The guest firewall opens every published port.
+- The service that the agent runs must also listen on `0.0.0.0`. pasta
+  delivers a non-local peer with its real source address, so a server
+  bound to `127.0.0.1` stays unreachable.
+
+`allowedHostPorts` means something different in the VM. The ports are
+the guest's own ports, not the host's. Host-local services stay
+unreachable, because the only path out of the guest is the egress
+allowlist.
+
 ### Security comparison
 
 | Property | Sandbox (`nix run .#claude`) | MicroVM (`nix run .#claude-vm`) |
@@ -162,7 +182,8 @@ for example after a prompt injection. The stack stops these attacks:
   lands in a disposable guest. The attacker still needs a separate
   qemu/KVM escape to reach the host.
 - Reaching the LAN or host-local services. Traffic exits only through
-  the proxy, to allowlisted hosts.
+  the proxy, to allowlisted hosts. An empty `allowedHostPorts` keeps
+  this true.
 - Supply-chain payloads, for example a malicious `npm postinstall`.
   They run inside the same confinement as the agent.
 
@@ -174,6 +195,9 @@ These attacks stay possible:
   credentials in its shared config directory.
 - Malicious code planted in the repository and later executed on the
   host or in CI. Review changes before you run them outside the VM.
+- Access to host-local services, and inbound connections into the
+  sandbox, when you open them with `allowedHostPorts` or
+  `publishedPorts`. Both options default to the empty list.
 - A qemu/KVM zero-day.
 
 ### VM builders
@@ -256,6 +280,11 @@ Each builder accepts these options:
 | --- | --- | --- |
 | `package` | the agent package from nixpkgs | **Replace.** The agent package to wrap. `pkg` is an accepted alias. |
 | `allowedDomains` | `agentDomains` | **Replace.** The host-origin allowlist. Pass a new attrset, or `//`-merge onto `agentDomains`. |
+| `allowNix` | `false` | **Replace.** Expose the host nix daemon socket and the whole nix store, and add `pkgs.nix` to the agent PATH. Requires `allowUnixSockets = true`. |
+| `allowUnixSockets` | `false` | **Replace.** Permit AF_UNIX sockets. The agent connects in directories it can read, and binds in directories it can write. |
+| `allowHeadlessBrowsers` | `[ ]` | **Replace.** Headless browser engines the sandbox accommodates: `"chromium"`, `"firefox"`. Requires `allowUnixSockets = true` on Linux. |
+| `allowedHostPorts` | `[ ]` | **Replace.** Host-local TCP ports the sandbox can reach. `null` allows every host-local TCP port. |
+| `publishedPorts` | `[ ]` | **Replace.** TCP ports forwarded into the sandbox, so a service the agent runs is reachable from outside. An entry is a port number or `{ port = <int>; bindAddr = "<ipv4>"; }`. |
 | `extraPackages` | `[ ]` | **Append.** Extra packages added onto the built-in tool set (`agent-sandbox`'s `commonTools`). |
 | `extraRwDirs` | `[ ]` | **Append.** Extra read/write directories added onto the defaults. |
 | `extraRoDirs` | `[ ]` | **Append.** Extra read-only directories added onto the defaults. |
@@ -319,6 +348,91 @@ Rules for a key with a port:
 The port support comes from `patches/proxy-ports.patch`, which this flake
 applies to the `agent-sandbox.nix` input. Upstream allows port 443 for `CONNECT`
 and port 80 for plaintext only.
+
+### Ports and UNIX sockets
+
+Three options control the rest of the network surface. Each one is passed
+to `agent-sandbox.nix` unchanged.
+
+`allowedHostPorts` lists the host-local TCP ports the sandbox can reach.
+The default is the empty list, so host databases, dev servers and agent
+sockets are unreachable. Set `null` to allow every host-local TCP port.
+
+```nix
+allowedHostPorts = [ 3000 5432 ];
+```
+
+`publishedPorts` lists the TCP ports forwarded into the sandbox. Use it
+when something outside must call in, for example a test callback or a
+dev server you open in the host browser. An entry is a port number,
+which binds `127.0.0.1`, or the long form with an explicit address. The
+port number is the same on both sides.
+
+```nix
+publishedPorts = [
+  3000
+  {
+    port = 8080;
+    bindAddr = "0.0.0.0";
+  }
+];
+```
+
+`allowUnixSockets` permits AF_UNIX sockets, which the sandbox denies by
+default. Build tools that talk over a domain socket need it, and so do
+`allowNix` and `allowHeadlessBrowsers`.
+
+### Nix inside the sandbox
+
+Set `allowNix = true` to let the agent run `nix` commands. The sandbox
+exposes the host nix daemon socket and the whole nix store, and adds
+`pkgs.nix` to the agent PATH. The option requires
+`allowUnixSockets = true` and a running `nix-daemon`.
+
+```nix
+allowNix = true;
+allowUnixSockets = true;
+```
+
+`allowNix = true` weakens the sandbox. The agent can execute every
+binary in the store, so `extraPackages` then limits the PATH and not
+what the agent can run. The daemon runs outside the sandbox, so its own
+downloads do not obey `allowedDomains`.
+
+The sandbox refuses to launch when your user is one of the nix daemon's
+`trusted-users`, and asks for confirmation when the daemon does not
+sandbox its builds. A trusted user can reconfigure the daemon, which
+defeats the confinement.
+
+The microVM variants do not support `allowNix`. The guest nix store is a
+read-only share from the host, and the guest runs no nix daemon. The VM
+builders drop the option for the guest sandbox and print a warning at
+evaluation. Run nix work in the host sandbox instead.
+
+### Headless browsers
+
+Set `allowHeadlessBrowsers` to run browser tests inside the sandbox. The
+engines are `"chromium"` (Google Chrome and Chromium) and `"firefox"`.
+This option needs `agent-sandbox.nix` v5.5.0 or later.
+
+Put the browser and its driver in `extraPackages`, both from the same
+nixpkgs: `chromedriver` only drives a browser of the same major version.
+
+```nix
+allowHeadlessBrowsers = [ "chromium" ];
+allowUnixSockets = true;
+extraPackages = [
+  pkgs.chromium
+  pkgs.chromedriver
+];
+```
+
+On Linux the option requires `allowUnixSockets = true`, because a
+browser locks its profile with a UNIX-domain socket. Read the browser
+path from an environment variable, such as `CHROME_BIN` in `extraEnv`.
+The store path changes when nixpkgs updates. For the driver settings of
+each platform, see the
+[upstream documentation](https://github.com/archie-judd/agent-sandbox.nix#using-headless-browsers-inside-the-sandbox).
 
 ### Example downstream flake
 

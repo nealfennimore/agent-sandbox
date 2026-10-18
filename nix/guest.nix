@@ -6,6 +6,7 @@
   agentPackage, # the sandboxed wrapper package to install in the guest
   cfg, # evaluated vmModule config
   sandboxShares, # share specs computed by nix/vm.nix sandboxShares
+  publishedPorts, # normalized sandbox publishedPorts, for the qemu forwards
   guestUser,
 }:
 { lib, pkgs, ... }:
@@ -43,6 +44,11 @@ in
 {
   system.stateVersion = lib.trivial.release;
   networking.hostName = "${name}-vm";
+
+  # Ports the in-guest sandbox publishes. qemu forwards a host
+  # connection to the guest, and the guest firewall sees it before
+  # pasta hands it to the sandbox, so open each port here too.
+  networking.firewall.allowedTCPPorts = map (p: p.port) publishedPorts;
 
   # The guest agent runs as root. Unprivileged 9p presents the host
   # user's files as root inside the guest, so guest root is the peer of
@@ -193,6 +199,19 @@ in
         mac = "02:00:00:00:00:01";
       }
     ];
+    # Host-to-guest forwards for the sandbox publishedPorts. SLiRP
+    # drops every inbound connection that qemu does not forward.
+    # bindAddr is the host address qemu listens on. The guest address
+    # stays empty, which means the guest address on the SLiRP link.
+    forwardPorts = map (p: {
+      from = "host";
+      proto = "tcp";
+      host = {
+        address = p.bindAddr;
+        inherit (p) port;
+      };
+      guest.port = p.port;
+    }) publishedPorts;
     shares = [
       {
         tag = "ro-store";

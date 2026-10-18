@@ -9,6 +9,10 @@
 # Every directory and file the sandbox declares (agent defaults plus
 # extra*) is also shared from the host into the guest, so the sandbox
 # inside the guest sees the same data as a sandbox on the host.
+#
+# Sandbox publishedPorts become qemu host-to-guest forwards as well.
+# The guest publishes each port on 0.0.0.0 and qemu forwards it to the
+# host address in bindAddr.
 {
   lib,
   pkgs,
@@ -130,6 +134,21 @@ rec {
     };
   };
 
+  # Translate the sandbox publishedPorts into the attrset form the VM
+  # needs, and into the address the guest must bind.
+  #
+  # qemu forwards a host connection to the guest address on the SLiRP
+  # link, never to guest 127.0.0.1, so a sandbox that published on the
+  # default 127.0.0.1 inside the guest would stay unreachable. Inside
+  # the guest the sandbox therefore publishes on 0.0.0.0, and bindAddr
+  # becomes the host address that qemu listens on. The service the
+  # agent runs inside the sandbox must also listen on 0.0.0.0: pasta
+  # delivers a non-local peer with its real source address.
+  guestPublishedPorts = map (p: {
+    inherit (p) port;
+    bindAddr = "0.0.0.0";
+  });
+
   mkAgentVm =
     agent: config:
     let
@@ -141,22 +160,38 @@ rec {
           ];
         }).config;
       rwFiles = (agent.rwFiles or [ ]) ++ cfg.sandbox.extraRwFiles;
+      publishedPorts = map sandbox.normalizePublishedPort cfg.sandbox.publishedPorts;
+      # allowNix is dropped rather than passed down. The guest runs no
+      # nix daemon, so the launcher inside the guest would refuse to
+      # start and the kiosk VM would power off at once. Dropping it
+      # degrades the VM the way an rwFiles entry degrades: the
+      # warning below names what the VM did not honor.
+      guestSandboxCfg = cfg.sandbox // {
+        allowNix = false;
+        publishedPorts = guestPublishedPorts publishedPorts;
+      };
+      # Configurations the VM cannot honor. Each one degrades to a
+      # runtime symptom, so name it at evaluation time instead.
+      warnings =
+        lib.optional (rwFiles != [ ])
+          "agent-sandbox VM (${agent.binName}): the VM version has no read/write files. Declared rwFiles (${lib.concatStringsSep ", " rwFiles}) become read-only snapshots, and guest writes to them are lost at shutdown."
+        ++ lib.optional cfg.sandbox.allowNix "agent-sandbox VM (${agent.binName}): the VM version has no nix support. allowNix is dropped for the guest sandbox: the guest nix store is a read-only share from the host and the guest runs no nix daemon. Use the host sandbox for nix work.";
+      runner =
+        (lib.nixosSystem {
+          inherit system;
+          modules = [
+            microvm.nixosModules.microvm
+            (import ./guest.nix {
+              name = agent.binName;
+              agentPackage = sandbox.buildSandbox agent guestSandboxCfg;
+              sandboxShares = sandboxShares agent cfg.sandbox;
+              inherit cfg guestUser publishedPorts;
+            })
+          ]
+          ++ cfg.extraModules;
+        }).config.microvm.declaredRunner;
     in
-    lib.warnIf (rwFiles != [ ])
-      "agent-sandbox VM (${agent.binName}): the VM version has no read/write files. Declared rwFiles (${lib.concatStringsSep ", " rwFiles}) become read-only snapshots, and guest writes to them are lost at shutdown."
-      (lib.nixosSystem {
-        inherit system;
-        modules = [
-          microvm.nixosModules.microvm
-          (import ./guest.nix {
-            name = agent.binName;
-            agentPackage = sandbox.buildSandbox agent cfg.sandbox;
-            sandboxShares = sandboxShares agent cfg.sandbox;
-            inherit cfg guestUser;
-          })
-        ]
-        ++ cfg.extraModules;
-      }).config.microvm.declaredRunner;
+    lib.foldl' (value: message: lib.warn message value) runner warnings;
 
   # Every microvm runner exposes the same bin/microvm-run, so the
   # runners cannot share a dev shell PATH directly. Wrap each runner
