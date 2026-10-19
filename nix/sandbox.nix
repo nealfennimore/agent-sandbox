@@ -181,5 +181,34 @@ rec {
       ];
     }).config;
 
-  mkAgentSandbox = agent: config: buildSandbox agent (evalSandbox agent config);
+  # The builder attaches `extend` and `sandboxConfig` to the wrapper, so
+  # a downstream flake can add to a built sandbox without calling a
+  # builder itself:
+  #
+  #   agentbox.packages.${system}.claude.extend {
+  #     extraPackages = [ pkgs.cargo ];
+  #     allowedDomains."crates.io" = "*";
+  #   }
+  #
+  # `extend` evaluates everything again, with the extra module imported
+  # next to the base module, so the module system does the merging:
+  # lists concatenate and attrsets merge per key. The result carries
+  # `extend` again, so the calls chain.
+  #
+  # The attributes live in `passthru`, which a later `overrideAttrs`
+  # keeps. `buildSpec` travels with them: agent-sandbox.nix attaches it
+  # with `//` after `runCommand`, and `overrideAttrs` rebuilds the
+  # derivation from its own arguments, which drops it.
+  mkAgentSandbox =
+    agent: config:
+    let
+      drv = buildSandbox agent (evalSandbox agent config);
+    in
+    drv.overrideAttrs (prev: {
+      passthru = (prev.passthru or { }) // {
+        inherit (drv) buildSpec;
+        sandboxConfig = config;
+        extend = extra: mkAgentSandbox agent { imports = [ config extra ]; };
+      };
+    });
 }

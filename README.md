@@ -270,6 +270,10 @@ flake can extend the sandbox without forking it:
 | `lib.${system}.mkAgentVm` | Generic VM builder. Takes an agent descriptor and a VM config (Linux systems only) |
 | `lib.${system}.mkVmLauncher` | Wraps a VM runner in a launcher binary with the given name, to put the VM on a dev shell or system PATH (Linux systems only) |
 
+A downstream flake does not need a builder for a small addition. Every
+sandbox package under `packages.${system}` carries an `extend`
+attribute. See "Extending a built sandbox" below.
+
 The builders evaluate their argument with the NixOS module system. Each
 argument is a typed option with a default. An unknown or mistyped argument
 fails evaluation with the offending option path.
@@ -311,6 +315,50 @@ agentbox.lib.${system}.mkAgentSandbox {
 whole allowlist (merge with `//` to keep the defaults), while `extraEnv`
 **merges** onto the default env. The three `extra*` lists are **appended** onto
 the built-in defaults.
+
+### Extending a built sandbox
+
+Every sandbox package carries two extra attributes. `extend` takes one
+more module and returns a new sandbox. `sandboxConfig` holds the module
+that the package was built from.
+
+```nix
+agentbox.packages.${system}.claude.extend {
+  extraPackages = [ pkgs.cargo ];
+  extraRwDirs = [ "$HOME/.cargo" ];
+}
+```
+
+`extend` evaluates the configuration again with both modules, so the
+module system does the merging. Lists concatenate and attrsets merge per
+key. You do not write `old.x ++` or `//` yourself. The result carries
+`extend` again, so the calls chain:
+
+```nix
+(agentbox.packages.${system}.claude.extend {
+  extraPackages = [ pkgs.cargo ];
+}).extend { extraPackages = [ pkgs.nodejs ]; }
+```
+
+Two rules of the module system apply:
+
+- A default is never merged with a definition. `allowedDomains` replaces
+  the default allowlist as soon as one module in the chain defines it.
+  To keep the defaults, write `allowedDomains = agentDomains // { ... };`
+  in the first module that defines the option. Later modules merge their
+  own keys onto that definition.
+- Two modules that define the same scalar option, for example `package`
+  or `allowNix`, conflict. Evaluation fails and names the option path.
+  Define a scalar option in one module only.
+
+`sandboxConfig` is a module as well, so it also configures a VM:
+
+```nix
+agentbox.lib.${system}.mkClaudeVm {
+  sandbox = agentbox.packages.${system}.claude.sandboxConfig;
+  mem = 8192;
+}
+```
 
 ### `allowedDomains` format
 
