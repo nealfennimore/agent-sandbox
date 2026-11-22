@@ -1,0 +1,17 @@
+{
+  "version": "1.19.4",
+  "platforms": {
+    "darwin-arm64": {
+      "asset": "opencode-darwin-arm64.zip",
+      "checksum": "c400a2f8c8ab7e99478a7f4dd1a466b57bf33888e520d85c55780a5464c4b689"
+    },
+    "linux-arm64": {
+      "asset": "opencode-linux-arm64.tar.gz",
+      "checksum": "8568230ccd847dc93e95b9f6894379077d3e014a16b48040743573e77c23e85f"
+    },
+    "linux-x64": {
+      "asset": "opencode-linux-x64.tar.gz",
+      "checksum": "849bd6b3d959a1d2ef200ed1634a51c79a45ca236aa26665d75debd694805cce"
+    }
+  }
+}

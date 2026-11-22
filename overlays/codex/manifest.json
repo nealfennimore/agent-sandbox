@@ -1,0 +1,21 @@
+{
+  "version": "0.171.0",
+  "platforms": {
+    "aarch64-apple-darwin": {
+      "asset": "codex-package-aarch64-apple-darwin.tar.gz",
+      "checksum": "58c88032ec446e72922d911d8f03773102da20c16a6059cf21f6744bce57f210"
+    },
+    "aarch64-unknown-linux-musl": {
+      "asset": "codex-package-aarch64-unknown-linux-musl.tar.gz",
+      "checksum": "d8c43bee6cf11b01eb18b95f4d7961092bc40228180808859e70dabb7784c1c9"
+    },
+    "x86_64-apple-darwin": {
+      "asset": "codex-package-x86_64-apple-darwin.tar.gz",
+      "checksum": "dd130ea3217b4e6fe4454c99949e0b28e2e8a9ad8da8c3a75f0c7265fab7153b"
+    },
+    "x86_64-unknown-linux-musl": {
+      "asset": "codex-package-x86_64-unknown-linux-musl.tar.gz",
+      "checksum": "8391d67757496bfd14893eca6cbf0c96994bf2627566ff1f018f70600c9ef6b3"
+    }
+  }
+}
