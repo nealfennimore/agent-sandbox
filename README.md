@@ -19,6 +19,9 @@ Everything not in the allowlist is dropped.
 | `nix/sandbox.nix` | Sandbox interface (module) and builders |
 | `nix/vm.nix` | MicroVM interface (module) and builder |
 | `nix/guest.nix` | NixOS configuration for the VM guest |
+| `nix/tests.nix` | The flake checks |
+| `overlays/` | Vendored agent packages, and the overlay that puts them in `pkgs` |
+| `.github/workflows/update-overlays.yml` | Daily manifest update, checks, and pull request |
 
 ## Standalone use
 
@@ -31,6 +34,87 @@ nix develop               # all three
 # or run the package directly
 nix run .#claude
 ```
+
+## Agent packages
+
+The agents come from `overlays/`, not from the nixpkgs pin in
+`flake.lock`. Each agent has a directory with three files:
+
+| File | Contents |
+| --- | --- |
+| `manifest.json` | The pinned release: version, and the asset and checksum of each platform |
+| `package.nix` | The package that installs that release |
+| `update.sh` | The script that rewrites `manifest.json` to a newer release |
+
+The packages install upstream release binaries. A new agent version
+needs a new manifest and no new hash. `overlays/default.nix` puts the
+three packages in `pkgs` as `claude-code`, `opencode` and `codex`. The
+flake applies that overlay to its own nixpkgs, so `nix/agents.nix` gets
+the vendored packages.
+
+### Update one agent
+
+Run the script next to the manifest, then rebuild:
+
+```sh
+./overlays/claude-code/update.sh        # the latest release
+./overlays/codex/update.sh 0.171.0      # a given release
+nix flake check -L                      # verify the new manifest
+```
+
+The download hosts are not reachable from inside the sandbox. Run the
+scripts outside it. A daily GitHub Actions workflow runs the same
+scripts. See "Checks" below.
+
+### Override an agent version from another flake
+
+The vendored package is a default, not a fixed choice. Three overrides
+are available, from the smallest to the largest.
+
+Replace the package for one sandbox. Pass `package` to a builder or to
+`extend`:
+
+```nix
+agentbox.packages.${system}.claude.extend {
+  package = pkgs.claude-code;   # from your own nixpkgs
+}
+```
+
+Keep the packaging of this flake and track another release. Override the
+`manifest` argument:
+
+```nix
+agentbox.packages.${system}.claude.extend {
+  package = agentbox.lib.${system}.agentPackages.claude-code.override {
+    manifest = nixpkgs.lib.importJSON ./claude-code-manifest.json;
+  };
+}
+```
+
+Replace the packages everywhere. Apply `overlays.default` to your own
+nixpkgs, and add your own overlay after it:
+
+```nix
+pkgs = import nixpkgs {
+  inherit system;
+  config.allowUnfree = true;
+  overlays = [
+    agentbox.overlays.default
+    (final: prev: {
+      claude-code = prev.claude-code.override {
+        manifest = final.lib.importJSON ./claude-code-manifest.json;
+      };
+    })
+  ];
+};
+```
+
+The builders in `agentbox.lib.${system}` use the nixpkgs of this flake.
+Your own overlay does not reach them. To change what a builder wraps,
+pass the package as `package`.
+
+`package` is a scalar option. Define it in one module only, or the
+module system reports a conflict. See "Extending a built sandbox".
 
 ## MicroVM variants
 
@@ -269,6 +353,8 @@ flake can extend the sandbox without forking it:
 | `lib.${system}.mkCodexVm` | Builder for the Codex microVM (Linux systems only) |
 | `lib.${system}.mkAgentVm` | Generic VM builder. Takes an agent descriptor and a VM config (Linux systems only) |
 | `lib.${system}.mkVmLauncher` | Wraps a VM runner in a launcher binary with the given name, to put the VM on a dev shell or system PATH (Linux systems only) |
+| `lib.${system}.agentPackages` | The vendored agent packages: `claude-code`, `opencode` and `codex`. See "Agent packages". |
+| `overlays.default` | The overlay that puts the vendored agent packages in `pkgs`. Not per system. |
 
 A downstream flake does not need a builder for a small addition. Every
 sandbox package under `packages.${system}` carries an `extend`
@@ -655,3 +741,67 @@ Codex can also use a ChatGPT login instead of `OPENAI_API_KEY`. The login
 credentials live in `$HOME/.codex`, which the sandbox mounts read/write. If the
 browser login flow does not work inside the sandbox, run `codex login` outside
 the sandbox first.
+
+## Checks
+
+`nix flake check -L` runs every check. Run the checks outside the
+sandbox. The sandbox has no `nix` binary, unless `allowNix` is set.
+
+| Tier | Cost | Contents |
+| --- | --- | --- |
+| `eval-*` | Evaluation only | Module semantics, manifest shape, and VM path mapping |
+| `sandbox-*` | One sandbox closure per check | The launcher spec of a built wrapper |
+| `vm-*` | Evaluation only | Instantiation of each microVM guest |
+
+Run one check alone:
+
+```sh
+nix build -L .#checks.x86_64-linux.eval-sandbox
+```
+
+What each check covers:
+
+- `eval-overlays` ties the overlay to the manifests. It compares the
+  version of each package with the manifest. It compares each `pkgs`
+  attribute with the package in `overlays/`.
+- `eval-sandbox` covers the sandbox module: the closed defaults, the
+  append and replace semantics of each option, and the rejection of an
+  unknown option.
+- `eval-vm` covers the mapping from a host path to a guest path, and the
+  share specs that `nix/vm.nix` computes.
+- `sandbox-override` builds a wrapper over a stub agent. It proves that
+  `package` overrides the vendored default, and that `extend` adds to a
+  built sandbox. It downloads no agent release.
+- `sandbox-claude`, `sandbox-opencode` and `sandbox-codex` build the
+  real wrappers. Each check asserts on the launcher spec and on the
+  proxy allowlist. Each check downloads the agent release that the
+  manifest pins, so these are the slowest checks.
+- `vm-claude`, `vm-opencode` and `vm-codex` evaluate the guest
+  derivation and discard it. The NixOS closure is never built.
+
+The `sandbox-*` checks read `buildSpec`, the JSON file that the wrapper
+carries. That spec is the contract between this flake and
+`agent-sandbox.nix`. The spec also names the proxy allowlist file, which
+holds the egress policy.
+
+The checks never launch an agent. A launch needs a user namespace, a
+network namespace and a running proxy. The nix build sandbox denies all
+three.
+
+### Daily update workflow
+
+`.github/workflows/update-overlays.yml` runs every day at 06:20 UTC, and
+on demand from the Actions tab. The job does four things:
+
+1. It runs the update script of each agent.
+2. It writes the version changes to the job summary.
+3. It runs `nix flake check -L`.
+4. It opens a pull request on branch `overlays/auto-update`, when a
+   manifest changed.
+
+The checks run on every job, so the workflow also reports a flake that
+breaks without a manifest change. A failed check stops the pull request.
+
+The pull request comes from `GITHUB_TOKEN`. Turn on "Allow GitHub
+Actions to create and approve pull requests" in the repository settings,
+or the last step fails with HTTP 403.

@@ -10,9 +10,13 @@
   #   nix/sandbox.nix — sandbox interface (module) and builders
   #   nix/vm.nix      — microVM interface (module) and builder
   #   nix/guest.nix   — NixOS configuration for the VM guest
+  #   nix/tests.nix   — the flake checks
+  #   overlays/       — the vendored agent packages, and the overlay that
+  #                     puts them in pkgs
   #
   # Build & enter:   nix develop .#claude
   # Then run:        claude
+  # Run the checks:  nix flake check -L
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     agent-sandbox.url = "github:archie-judd/agent-sandbox.nix";
@@ -37,12 +41,19 @@
       microvm,
       ...
     }:
+    # The vendored agent packages. They track upstream releases ahead of
+    # the nixpkgs pin, and `overlays.default` below exports the overlay
+    # so a downstream flake can apply it to its own nixpkgs.
+    let
+      agentOverlay = import ./overlays;
+    in
     flake-utils.lib.eachDefaultSystem (
       system:
       let
         pkgs = import nixpkgs {
           inherit system;
           config.allowUnfree = true;
+          overlays = [ agentOverlay ];
         };
         lib = nixpkgs.lib;
 
@@ -63,6 +74,17 @@
             system
             microvm
             sandbox
+            ;
+        };
+        tests = import ./nix/tests.nix {
+          inherit
+            lib
+            pkgs
+            system
+            domains
+            agents
+            sandbox
+            vm
             ;
         };
 
@@ -103,6 +125,11 @@
             mkOpencodeSandbox
             mkCodexSandbox
             ;
+          # The agent packages the overlay provides, for a downstream
+          # flake that overrides `package` without applying the overlay.
+          agentPackages = {
+            inherit (pkgs) claude-code opencode codex;
+          };
         }
         // lib.optionalAttrs isLinux {
           inherit
@@ -146,6 +173,11 @@
         // lib.optionalAttrs isLinux {
           inherit claude-vm opencode-vm codex-vm;
         };
+
+        inherit (tests) checks;
       }
-    );
+    )
+    // {
+      overlays.default = agentOverlay;
+    };
 }

@@ -19,14 +19,19 @@
   installShellFiles,
   versionCheckHook,
   writableTmpDirAsHomeHook,
+  # Release metadata for this package. Override it to track another
+  # release without a copy of this file:
+  #   pkgs.codex.override { manifest = lib.importJSON ./other.json; }
+  manifest ? lib.importJSON ./manifest.json,
 }:
 let
   stdenv = stdenvNoCC;
-  manifest = lib.importJSON ./manifest.json;
   platformKey =
     stdenv.hostPlatform.parsed.cpu.name
     + (if stdenv.hostPlatform.isDarwin then "-apple-darwin" else "-unknown-linux-musl");
-  platformManifestEntry = manifest.platforms.${platformKey};
+  platformManifestEntry =
+    manifest.platforms.${platformKey}
+      or (throw "codex: manifest.json has no release asset for platform key \"${platformKey}\"");
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "codex";

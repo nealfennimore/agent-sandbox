@@ -30,8 +30,12 @@
       "$HOME/.local/state/opencode"
     ];
     # Add whatever provider key opencode is configured to use via
-    # extraEnv, e.g. ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
-    env = { };
+    # extraEnv, for example ANTHROPIC_API_KEY = "$ANTHROPIC_API_KEY";
+    env = {
+      # The release binary refreshes its model list from models.dev at
+      # startup. That domain is not in the allowlist, so stop the fetch.
+      OPENCODE_DISABLE_MODELS_FETCH = "true";
+    };
   };
 
   codex = {

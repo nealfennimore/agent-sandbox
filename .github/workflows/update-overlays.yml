@@ -1,0 +1,109 @@
+# Daily overlay update.
+#
+# The job runs the update script of every agent in overlays/, runs the
+# flake checks, and opens a pull request when a manifest changed. The
+# checks run on every job, so the workflow also reports a flake that
+# breaks without a manifest change.
+#
+# The pull request comes from GITHUB_TOKEN. Turn on "Allow GitHub Actions
+# to create and approve pull requests" in the repository settings, or the
+# last step fails with HTTP 403.
+name: Update agent overlays
+
+on:
+  schedule:
+    # 06:20 UTC, daily.
+    - cron: "20 6 * * *"
+  workflow_dispatch:
+
+# One update at a time. A second run must not race the branch.
+concurrency:
+  group: update-overlays
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    name: Update the manifests and run the checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v4
+
+      - name: Install nix
+        uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+
+      - name: Update the manifests
+        env:
+          # The codex and opencode scripts read the GitHub release API.
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          for agent in claude-code codex opencode; do
+            ./overlays/"$agent"/update.sh
+          done
+
+      - name: Summarize the manifest changes
+        id: summary
+        run: |
+          changed=false
+          body=""
+          for agent in claude-code codex opencode; do
+            manifest="overlays/$agent/manifest.json"
+            old="$(git show "HEAD:$manifest" | jq -r .version)"
+            new="$(jq -r .version "$manifest")"
+            if [ "$old" = "$new" ]; then
+              echo "$agent: unchanged at $new"
+              continue
+            fi
+            changed=true
+            echo "$agent: $old -> $new"
+            body="${body}- \`${agent}\`: ${old} -> ${new}"$'\n'
+          done
+          {
+            echo "changed=$changed"
+            echo "body<<PR_BODY_EOF"
+            printf '%s' "$body"
+            echo "PR_BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## Manifest versions"
+            echo
+            if [ "$changed" = true ]; then
+              printf '%s' "$body"
+            else
+              echo "No manifest changed."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The checks build every sandbox wrapper, so they download each
+      # agent release that the manifests now pin. A failure here stops
+      # the pull request.
+      - name: Run the flake checks
+        run: nix flake check -L
+
+      - name: Open a pull request
+        if: steps.summary.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: overlays/auto-update
+          delete-branch: true
+          add-paths: overlays/*/manifest.json
+          title: "overlays: update the agent manifests"
+          commit-message: |
+            overlays: update the agent manifests
+
+            ${{ steps.summary.outputs.body }}
+          body: |
+            The daily overlay update changed these manifests:
+
+            ${{ steps.summary.outputs.body }}
+            `nix flake check` passed on this branch before this pull
+            request was opened. Run the checks again after a rebase.

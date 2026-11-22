@@ -10,8 +10,8 @@
 #
 # The binary embeds its own models.dev snapshot. Unlike the nixpkgs build, it
 # also refreshes that list from models.dev at run time.
-# modules/linux/nixos/packages/opencode.nix sets OPENCODE_DISABLE_MODELS_FETCH
-# in the sandbox to stop that.
+# nix/agents.nix sets OPENCODE_DISABLE_MODELS_FETCH in the sandbox to stop
+# that fetch, because models.dev is not in the egress allowlist.
 {
   lib,
   stdenvNoCC,
@@ -24,12 +24,17 @@
   sysctl,
   versionCheckHook,
   writableTmpDirAsHomeHook,
+  # Release metadata for this package. Override it to track another
+  # release without a copy of this file:
+  #   pkgs.opencode.override { manifest = lib.importJSON ./other.json; }
+  manifest ? lib.importJSON ./manifest.json,
 }:
 let
   stdenv = stdenvNoCC;
-  manifest = lib.importJSON ./manifest.json;
   platformKey = "${stdenv.hostPlatform.node.platform}-${stdenv.hostPlatform.node.arch}";
-  platformManifestEntry = manifest.platforms.${platformKey};
+  platformManifestEntry =
+    manifest.platforms.${platformKey}
+      or (throw "opencode: manifest.json has no release asset for platform key \"${platformKey}\"");
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "opencode";

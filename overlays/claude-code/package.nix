@@ -16,13 +16,18 @@
   socat,
   versionCheckHook,
   writableTmpDirAsHomeHook,
+  # Release metadata for this package. Override it to track another
+  # release without a copy of this file:
+  #   pkgs.claude-code.override { manifest = lib.importJSON ./other.json; }
+  manifest ? lib.importJSON ./manifest.json,
 }:
 let
   stdenv = stdenvNoCC;
   baseUrl = "https://downloads.claude.ai/claude-code-releases";
-  manifest = lib.importJSON ./manifest.json;
   platformKey = "${stdenv.hostPlatform.node.platform}-${stdenv.hostPlatform.node.arch}";
-  platformManifestEntry = manifest.platforms.${platformKey};
+  platformManifestEntry =
+    manifest.platforms.${platformKey}
+      or (throw "claude-code: manifest.json has no release asset for platform key \"${platformKey}\"");
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "claude-code";

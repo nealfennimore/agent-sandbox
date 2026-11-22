@@ -13,10 +13,17 @@ OWNER="openai"
 REPO="codex"
 API="https://api.github.com/repos/${OWNER}/${REPO}/releases"
 
+# GitHub rate-limits unauthenticated API calls per source address. Use a
+# token when the environment holds one, for example in CI.
+curl_args=(-fsSL)
+if [[ -n "${GITHUB_TOKEN:-}" ]]; then
+  curl_args+=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+fi
+
 if [[ -n "${1:-}" ]]; then
-  release="$(curl -fsSL "${API}/tags/rust-v${1#rust-v}")"
+  release="$(curl "${curl_args[@]}" "${API}/tags/rust-v${1#rust-v}")"
 else
-  release="$(curl -fsSL "${API}/latest")"
+  release="$(curl "${curl_args[@]}" "${API}/latest")"
 fi
 
 # Keys are the Rust target triples in the asset names. package.nix builds
