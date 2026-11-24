@@ -22,6 +22,7 @@ Everything not in the allowlist is dropped.
 | `nix/guest.nix` | NixOS configuration for the VM guest |
 | `nix/tests.nix` | The flake checks |
 | `overlays/` | Vendored agent packages, and the overlay that puts them in `pkgs` |
+| `.github/workflows/checks.yml` | The flake checks, on every push and pull request |
 | `.github/workflows/update-overlays.yml` | Daily manifest update, checks, and pull request |
 
 ## Standalone use
@@ -816,6 +817,21 @@ holds the egress policy.
 The checks never launch an agent. A launch needs a user namespace, a
 network namespace and a running proxy. The nix build sandbox denies all
 three.
+
+
+### Checks workflow
+
+`.github/workflows/checks.yml` runs on every push to `main`, on every
+pull request, and on demand from the Actions tab. It has two jobs:
+
+1. `eval` runs the `eval-*` checks and the `vm-*` checks. These build
+   nothing and they download no agent release.
+2. `check` runs `nix flake check -L`. Each sandbox check downloads the
+   agent release that its manifest pins.
+
+The second job needs the first, so a broken module or manifest stops the
+expensive job. The runner image leaves little disk space, so the second
+job first deletes the preinstalled dotnet, android and ghc trees.
 
 ### Daily update workflow
 

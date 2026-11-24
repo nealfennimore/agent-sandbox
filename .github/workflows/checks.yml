@@ -1,0 +1,91 @@
+# The flake checks, on every push and pull request.
+#
+# The job runs the two cheap tiers first, then the tier that downloads the
+# agent releases. A failure in the cheap tiers stops the expensive job, so a
+# broken module or manifest costs one minute instead of an hour. See "Checks"
+# in README.md for what each check covers.
+#
+# Each action is pinned to a commit SHA, and the comment after the SHA names
+# the release. A tag is mutable, and a SHA is not. To move an action to a
+# newer release, resolve the tag to its commit:
+#
+#   gh api repos/actions/checkout/commits/v7.0.1 --jq .sha
+name: Checks
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+# One run per ref. A new push cancels the run of the previous commit.
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  eval:
+    name: Evaluation checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install nix
+        uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9 # v32.0.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # These checks evaluate Nix code. They build nothing and they
+      # download no agent release.
+      - name: Run the eval checks
+        run: |
+          nix build -L \
+            .#checks.x86_64-linux.eval-overlays \
+            .#checks.x86_64-linux.eval-sandbox \
+            .#checks.x86_64-linux.eval-vm
+
+      # Each one forces the evaluation of a microVM guest and discards
+      # it. The NixOS closure is never built.
+      - name: Run the VM instantiation checks
+        run: |
+          nix build -L \
+            .#checks.x86_64-linux.vm-claude \
+            .#checks.x86_64-linux.vm-opencode \
+            .#checks.x86_64-linux.vm-codex \
+            .#checks.x86_64-linux.vm-antigravity
+
+  check:
+    name: Every check
+    needs: eval
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install nix
+        uses: cachix/install-nix-action@bb0495a1086c46893eee56f32fd192dfe4a15bb9 # v32.0.0
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+
+      # The runner image fills about half the disk. The sandbox checks
+      # download one agent release each, so make room first.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      # This builds every sandbox wrapper, so it downloads the release
+      # that each manifest pins. It also covers any check the job above
+      # does not name.
+      - name: Run every check
+        run: nix flake check -L
