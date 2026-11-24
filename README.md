@@ -1,9 +1,10 @@
 # agent-sandbox flake
 
 Sandboxed [Claude Code](https://docs.claude.com/en/docs/claude-code),
-[OpenCode](https://github.com/numtide/llm-agents.nix), and
-[Codex](https://github.com/openai/codex), wrapped with
-[`agent-sandbox.nix`](https://github.com/archie-judd/agent-sandbox.nix).
+[OpenCode](https://github.com/numtide/llm-agents.nix),
+[Codex](https://github.com/openai/codex), and
+[Antigravity CLI](https://antigravity.google/product/antigravity-cli), wrapped
+with [`agent-sandbox.nix`](https://github.com/archie-judd/agent-sandbox.nix).
 
 Network egress is restricted to an explicit per-domain / per-method allowlist,
 enforced by a private netns (pasta) + nftables + a MITM filtering proxy.
@@ -29,7 +30,8 @@ Everything not in the allowlist is dropped.
 nix develop .#claude      # dev shell with `claude` on PATH
 nix develop .#opencode    # dev shell with `opencode` on PATH
 nix develop .#codex       # dev shell with `codex` on PATH
-nix develop               # all three
+nix develop .#antigravity # dev shell with `agy` on PATH
+nix develop               # all four
 
 # or run the package directly
 nix run .#claude
@@ -48,9 +50,15 @@ The agents come from `overlays/`, not from the nixpkgs pin in
 
 The packages install upstream release binaries. A new agent version
 needs a new manifest and no new hash. `overlays/default.nix` puts the
-three packages in `pkgs` as `claude-code`, `opencode` and `codex`. The
-flake applies that overlay to its own nixpkgs, so `nix/agents.nix` gets
-the vendored packages.
+four packages in `pkgs` as `claude-code`, `opencode`, `codex` and
+`antigravity-cli`. The flake applies that overlay to its own nixpkgs, so
+`nix/agents.nix` gets the vendored packages.
+
+`claude-code` and `antigravity-cli` are unfree, so the flake sets
+`config.allowUnfree = true`. The `antigravity-cli` package installs the
+GitHub release assets, because that release API reports a checksum for
+each asset. nixpkgs installs the storage.googleapis.com archives, whose
+hashes need a download.
 
 ### Update one agent
 
@@ -125,7 +133,8 @@ hardware isolation boundary on top of the namespace sandbox.
 
 ```sh
 cd ~/my-project
-nix run /path/to/this-flake#claude-vm      # or #opencode-vm / #codex-vm
+nix run /path/to/this-flake#claude-vm      # or #opencode-vm, #codex-vm,
+                                           # #antigravity-vm
 ```
 
 The dev shells also put a launcher for each VM on the PATH:
@@ -136,8 +145,9 @@ cd ~/my-project
 claude-vm                 # boots the VM from the current directory
 ```
 
-The default shell (`nix develop`) provides all three launchers: `claude-vm`,
-`opencode-vm`, and `codex-vm`. The launchers exist only on Linux systems.
+The default shell (`nix develop`) provides all four launchers: `claude-vm`,
+`opencode-vm`, `codex-vm`, and `antigravity-vm`. The launchers exist only on
+Linux systems.
 
 The runner boots a minimal NixOS guest and attaches your terminal to its
 serial console. The guest logs in automatically as `root`, prints any
@@ -287,9 +297,9 @@ These attacks stay possible:
 ### VM builders
 
 On Linux systems, `lib.${system}` also exports `mkAgentVm` and the per-agent
-builders `mkClaudeVm`, `mkOpencodeVm`, and `mkCodexVm`. Like the sandbox
-builders, the VM builders evaluate their argument with the NixOS module
-system, so every option is typed and checked. The options are:
+builders `mkClaudeVm`, `mkOpencodeVm`, `mkCodexVm`, and `mkAntigravityVm`. Like
+the sandbox builders, the VM builders evaluate their argument with the NixOS
+module system, so every option is typed and checked. The options are:
 
 | Option | Default | Semantics |
 | --- | --- | --- |
@@ -346,14 +356,16 @@ flake can extend the sandbox without forking it:
 | `lib.${system}.mkClaudeSandbox` | Builder for the Claude sandbox |
 | `lib.${system}.mkOpencodeSandbox` | Builder for the OpenCode sandbox |
 | `lib.${system}.mkCodexSandbox` | Builder for the Codex sandbox |
+| `lib.${system}.mkAntigravitySandbox` | Builder for the Antigravity CLI sandbox |
 | `lib.${system}.mkAgentSandbox` | Generic builder. Takes an agent descriptor and a sandbox config. |
 | `lib.${system}.agentDomains` | The default host-origin allowlist (an attrset), exported so you can merge onto it |
 | `lib.${system}.mkClaudeVm` | Builder for the Claude microVM (Linux systems only) |
 | `lib.${system}.mkOpencodeVm` | Builder for the OpenCode microVM (Linux systems only) |
 | `lib.${system}.mkCodexVm` | Builder for the Codex microVM (Linux systems only) |
+| `lib.${system}.mkAntigravityVm` | Builder for the Antigravity CLI microVM (Linux systems only) |
 | `lib.${system}.mkAgentVm` | Generic VM builder. Takes an agent descriptor and a VM config (Linux systems only) |
 | `lib.${system}.mkVmLauncher` | Wraps a VM runner in a launcher binary with the given name, to put the VM on a dev shell or system PATH (Linux systems only) |
-| `lib.${system}.agentPackages` | The vendored agent packages: `claude-code`, `opencode` and `codex`. See "Agent packages". |
+| `lib.${system}.agentPackages` | The vendored agent packages: `claude-code`, `opencode`, `codex` and `antigravity-cli`. See "Agent packages". |
 | `overlays.default` | The overlay that puts the vendored agent packages in `pkgs`. Not per system. |
 
 A downstream flake does not need a builder for a small addition. Every
@@ -735,12 +747,28 @@ nix run .#claude
 
 export OPENAI_API_KEY=...
 nix run .#codex
+
+export GEMINI_API_KEY=...
+nix run .#antigravity
 ```
 
 Codex can also use a ChatGPT login instead of `OPENAI_API_KEY`. The login
 credentials live in `$HOME/.codex`, which the sandbox mounts read/write. If the
 browser login flow does not work inside the sandbox, run `codex login` outside
 the sandbox first.
+
+Antigravity CLI needs no `GEMINI_API_KEY`. The client signs in with a Google
+account, and a Gemini subscription plan works. An API key and Application
+Default Credentials (`AGY_ADC_AUTH`) are the other two paths.
+
+The credentials live in `$HOME/.gemini`, which the sandbox mounts read/write.
+The client prefers the system keyring, and the sandbox exposes no D-Bus
+session. If the host keyring holds the token, the sandbox does not see it. In
+that case, run the first sign-in inside the sandbox. The client then falls
+back to its own file storage under `$HOME/.gemini`.
+
+The sign-in needs a browser. On a session without one, the client prints an
+authorization URL. Open that URL on the host.
 
 ## Checks
 
@@ -763,7 +791,8 @@ What each check covers:
 
 - `eval-overlays` ties the overlay to the manifests. It compares the
   version of each package with the manifest. It compares each `pkgs`
-  attribute with the package in `overlays/`.
+  attribute with the package in `overlays/`. It also asserts that every
+  agent descriptor takes its package from `pkgs`.
 - `eval-sandbox` covers the sandbox module: the closed defaults, the
   append and replace semantics of each option, and the rejection of an
   unknown option.
@@ -772,12 +801,12 @@ What each check covers:
 - `sandbox-override` builds a wrapper over a stub agent. It proves that
   `package` overrides the vendored default, and that `extend` adds to a
   built sandbox. It downloads no agent release.
-- `sandbox-claude`, `sandbox-opencode` and `sandbox-codex` build the
-  real wrappers. Each check asserts on the launcher spec and on the
-  proxy allowlist. Each check downloads the agent release that the
-  manifest pins, so these are the slowest checks.
-- `vm-claude`, `vm-opencode` and `vm-codex` evaluate the guest
-  derivation and discard it. The NixOS closure is never built.
+- `sandbox-claude`, `sandbox-opencode`, `sandbox-codex` and
+  `sandbox-antigravity` build the real wrappers. Each check asserts on
+  the launcher spec and on the proxy allowlist. Each check downloads an
+  agent release, so these are the slowest checks.
+- `vm-claude`, `vm-opencode`, `vm-codex` and `vm-antigravity` evaluate
+  the guest derivation and discard it. The NixOS closure is never built.
 
 The `sandbox-*` checks read `buildSpec`, the JSON file that the wrapper
 carries. That spec is the contract between this flake and

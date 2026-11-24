@@ -48,10 +48,11 @@ jobs:
 
       - name: Update the manifests
         env:
-          # The codex and opencode scripts read the GitHub release API.
+          # The codex, opencode and antigravity-cli scripts read the
+          # GitHub release API.
           GITHUB_TOKEN: ${{ github.token }}
         run: |
-          for agent in claude-code codex opencode; do
+          for agent in claude-code codex opencode antigravity-cli; do
             ./overlays/"$agent"/update.sh
           done
 
@@ -60,7 +61,7 @@ jobs:
         run: |
           changed=false
           body=""
-          for agent in claude-code codex opencode; do
+          for agent in claude-code codex opencode antigravity-cli; do
             manifest="overlays/$agent/manifest.json"
             old="$(git show "HEAD:$manifest" | jq -r .version)"
             new="$(jq -r .version "$manifest")"

@@ -25,4 +25,5 @@ final: _prev: {
   claude-code = final.callPackage ./claude-code/package.nix { };
   opencode = final.callPackage ./opencode/package.nix { };
   codex = final.callPackage ./codex/package.nix { };
+  antigravity-cli = final.callPackage ./antigravity-cli/package.nix { };
 }

@@ -51,4 +51,27 @@
       CODEX_HOME = "$HOME/.codex";
     };
   };
+
+  # Antigravity CLI. The binary is `agy`, and the package is vendored in
+  # overlays/antigravity-cli. See "Agent packages" in README.md.
+  antigravity = {
+    binName = "agy";
+    package = pkgs.antigravity-cli;
+    baseDomains = domains.antigravityBaseDomains;
+    # Settings, conversations and the file-based credential store live
+    # under $HOME/.gemini. The client prefers the system keyring. The
+    # sandbox exposes no D-Bus session, so the client falls back to its
+    # own file storage in this directory.
+    rwDirs = [ "$HOME/.gemini" ];
+    # The client also reads cross-tool Agent Skills from
+    # $HOME/.agents/skills (optional):
+    # roDirs = [ "$HOME/.agents/skills" ];
+    env = {
+      # Secrets are passed as runtime shell-var references so they
+      # expand in the shell, never landing in the /nix/store. A sign-in
+      # held in $HOME/.gemini needs no key here.
+      GEMINI_API_KEY = "$GEMINI_API_KEY";
+      GITHUB_TOKEN = "$GITHUB_TOKEN";
+    };
+  };
 }

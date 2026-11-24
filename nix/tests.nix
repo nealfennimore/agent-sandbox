@@ -34,6 +34,7 @@ let
     claude-code = lib.importJSON ../overlays/claude-code/manifest.json;
     opencode = lib.importJSON ../overlays/opencode/manifest.json;
     codex = lib.importJSON ../overlays/codex/manifest.json;
+    antigravity-cli = lib.importJSON ../overlays/antigravity-cli/manifest.json;
   };
 
   # A stand-in for an agent package. It gives a builder a real
@@ -161,6 +162,12 @@ let
       expr = pkgs.codex.drvPath == (pkgs.callPackage ../overlays/codex/package.nix { }).drvPath;
       expected = true;
     };
+    testAntigravityComesFromOverlay = {
+      expr =
+        pkgs.antigravity-cli.drvPath
+        == (pkgs.callPackage ../overlays/antigravity-cli/package.nix { }).drvPath;
+      expected = true;
+    };
 
     # Each package reports the version its manifest pins.
     testClaudeCodeVersion = {
@@ -175,12 +182,17 @@ let
       expr = pkgs.codex.version;
       expected = manifests.codex.version;
     };
+    testAntigravityVersion = {
+      expr = pkgs.antigravity-cli.version;
+      expected = manifests.antigravity-cli.version;
+    };
 
     # update.sh writes the manifest. These cases fail when a release
     # feed returns a version or a checksum in another shape.
     testVersionsAreSemver = {
       expr = map (m: semver m.version) (builtins.attrValues manifests);
       expected = [
+        true
         true
         true
         true
@@ -221,15 +233,26 @@ let
       expected = true;
     };
 
+    testAntigravityPlatformKeys = {
+      expr = builtins.all (key: builtins.hasAttr key manifests.antigravity-cli.platforms) [
+        "darwin-arm64"
+        "darwin-x64"
+        "linux-arm64"
+        "linux-x64"
+      ];
+      expected = true;
+    };
+
     # An agent descriptor takes its package from pkgs, so the overlay
     # reaches the sandbox builders.
     testAgentPackagesComeFromOverlay = {
-      expr = map (agent: agent.package.drvPath) (builtins.attrValues agents);
-      expected = [
-        pkgs.claude-code.drvPath
-        pkgs.codex.drvPath
-        pkgs.opencode.drvPath
-      ];
+      expr = lib.mapAttrs (_name: agent: agent.package.drvPath) agents;
+      expected = {
+        antigravity = pkgs.antigravity-cli.drvPath;
+        claude = pkgs.claude-code.drvPath;
+        codex = pkgs.codex.drvPath;
+        opencode = pkgs.opencode.drvPath;
+      };
     };
     testSandboxDefaultPackage = {
       expr = (claudeCfg { }).package.drvPath;
@@ -536,11 +559,31 @@ in
         ${githubAllowlistAssertions}
       '';
     };
+
+    sandbox-antigravity = mkSandboxCheck {
+      name = "sandbox-antigravity";
+      binName = "agy";
+      drv = sandbox.mkAgentSandbox agents.antigravity { };
+      assertions = ''
+        spec_is '.sandboxed_binary == "${pkgs.antigravity-cli}/bin/agy"'
+        spec_is '.rw_dirs == ["$HOME/.gemini"]'
+        spec_is '.env_keys == ["GEMINI_API_KEY","GITHUB_TOKEN"]'
+        allowlist_is '.["googleapis.com"] == "*"'
+        allowlist_is '.["accounts.google.com"] == "*"'
+        allowlist_is '.["antigravity.google"] == "*"'
+        allowlist_is '.["lh3.googleusercontent.com"] == ["GET","HEAD"]'
+        # The antigravity allowlist carries no Anthropic or OpenAI domain.
+        allowlist_is 'has("anthropic.com") == false'
+        allowlist_is 'has("openai.com") == false'
+        ${githubAllowlistAssertions}
+      '';
+    };
   }
   // lib.optionalAttrs isLinux {
     eval-vm = mkEvalCheck "eval-vm" vmTests;
     vm-claude = mkInstantiateCheck "vm-claude" (vm.mkAgentVm agents.claude { });
     vm-opencode = mkInstantiateCheck "vm-opencode" (vm.mkAgentVm agents.opencode { });
     vm-codex = mkInstantiateCheck "vm-codex" (vm.mkAgentVm agents.codex { });
+    vm-antigravity = mkInstantiateCheck "vm-antigravity" (vm.mkAgentVm agents.antigravity { });
   };
 }

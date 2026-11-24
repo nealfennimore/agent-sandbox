@@ -1,5 +1,6 @@
 {
-  # Test flake: sandbox Claude Code, OpenCode, and Codex with agent-sandbox.nix.
+  # Test flake: sandbox Claude Code, OpenCode, Codex, and Antigravity CLI
+  # with agent-sandbox.nix.
   # Network egress is restricted to an explicit per-domain / per-method
   # allowlist, enforced by a private netns (pasta) + nftables + a MITM
   # filtering proxy. Everything not in `allowedDomains` is dropped.
@@ -94,10 +95,12 @@
         mkClaudeSandbox = mkAgentSandbox agents.claude;
         mkOpencodeSandbox = mkAgentSandbox agents.opencode;
         mkCodexSandbox = mkAgentSandbox agents.codex;
+        mkAntigravitySandbox = mkAgentSandbox agents.antigravity;
 
         claude-sandboxed = mkClaudeSandbox { };
         opencode-sandboxed = mkOpencodeSandbox { };
         codex-sandboxed = mkCodexSandbox { };
+        antigravity-sandboxed = mkAntigravitySandbox { };
 
         # MicroVM outputs only make sense for Linux guests.
         isLinux = lib.hasSuffix "-linux" system;
@@ -105,14 +108,17 @@
         mkClaudeVm = mkAgentVm agents.claude;
         mkOpencodeVm = mkAgentVm agents.opencode;
         mkCodexVm = mkAgentVm agents.codex;
+        mkAntigravityVm = mkAgentVm agents.antigravity;
 
         claude-vm = mkClaudeVm { };
         opencode-vm = mkOpencodeVm { };
         codex-vm = mkCodexVm { };
+        antigravity-vm = mkAntigravityVm { };
 
         claude-vm-launcher = mkVmLauncher "claude-vm" claude-vm;
         opencode-vm-launcher = mkVmLauncher "opencode-vm" opencode-vm;
         codex-vm-launcher = mkVmLauncher "codex-vm" codex-vm;
+        antigravity-vm-launcher = mkVmLauncher "antigravity-vm" antigravity-vm;
 
         onLinux = lib.optionals isLinux;
       in
@@ -124,11 +130,12 @@
             mkClaudeSandbox
             mkOpencodeSandbox
             mkCodexSandbox
+            mkAntigravitySandbox
             ;
           # The agent packages the overlay provides, for a downstream
           # flake that overrides `package` without applying the overlay.
           agentPackages = {
-            inherit (pkgs) claude-code opencode codex;
+            inherit (pkgs) claude-code opencode codex antigravity-cli;
           };
         }
         // lib.optionalAttrs isLinux {
@@ -137,6 +144,7 @@
             mkClaudeVm
             mkOpencodeVm
             mkCodexVm
+            mkAntigravityVm
             mkVmLauncher
             ;
         };
@@ -151,16 +159,21 @@
           codex = pkgs.mkShell {
             packages = [ codex-sandboxed ] ++ onLinux [ codex-vm-launcher ];
           };
+          antigravity = pkgs.mkShell {
+            packages = [ antigravity-sandboxed ] ++ onLinux [ antigravity-vm-launcher ];
+          };
           default = pkgs.mkShell {
             packages = [
               claude-sandboxed
               opencode-sandboxed
               codex-sandboxed
+              antigravity-sandboxed
             ]
             ++ onLinux [
               claude-vm-launcher
               opencode-vm-launcher
               codex-vm-launcher
+              antigravity-vm-launcher
             ];
           };
         };
@@ -169,9 +182,10 @@
           claude = claude-sandboxed;
           opencode = opencode-sandboxed;
           codex = codex-sandboxed;
+          antigravity = antigravity-sandboxed;
         }
         // lib.optionalAttrs isLinux {
-          inherit claude-vm opencode-vm codex-vm;
+          inherit claude-vm opencode-vm codex-vm antigravity-vm;
         };
 
         inherit (tests) checks;
