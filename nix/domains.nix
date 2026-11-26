@@ -1,6 +1,12 @@
 # Domain allowlists. "*" = all HTTP methods; a list restricts to those
 # methods. A key without a port covers ports 80 and 443. To reach another
 # port, add the port to the key: "internal.example.com:8443" = "*";
+# To allow only some paths on a domain, use the object form:
+#   "buzz.example.internal" = {
+#     methods = "*";
+#     paths = [ "/buzz/agent/mcp/fable" "/buzz/agent/mcp/fable/*" ];
+#   };
+# The "*" and method-list forms allow every path.
 {
   # Bare minimum domains to get Claude (and Anthropic-backed OpenCode)
   # working.

@@ -355,6 +355,34 @@ let
       };
     };
 
+    # The object form is a path rule. methods defaults to "*".
+    testAllowedDomainsPathRule = {
+      expr =
+        let
+          rule = (claudeCfg {
+            allowedDomains."buzz.example" = {
+              paths = [ "/buzz/agent/mcp/fable/*" ];
+            };
+          }).allowedDomains."buzz.example";
+        in
+        {
+          inherit (rule) methods paths;
+        };
+      expected = {
+        methods = "*";
+        paths = [ "/buzz/agent/mcp/fable/*" ];
+      };
+    };
+    # A path rule needs at least one path.
+    testAllowedDomainsPathRuleNeedsPaths = {
+      expr = evalFails (claudeCfg {
+        allowedDomains."buzz.example" = {
+          paths = [ ];
+        };
+      }).allowedDomains."buzz.example".paths;
+      expected = true;
+    };
+
     # The agent package is a default, so one definition replaces it.
     # This is the override path for a downstream flake.
     testPackageOverride = {
@@ -489,6 +517,13 @@ in
         package = stubClaude;
         allowedDomains = domains.agentDomains // {
           "crates.io" = "*";
+          "buzz.example" = {
+            methods = [ "GET" ];
+            paths = [
+              "/buzz/agent/mcp/fable"
+              "/buzz/agent/mcp/fable/*"
+            ];
+          };
         };
         extraPackages = [ pkgs.hello ];
         extraRwDirs = [ "$HOME/.cargo" ];
@@ -509,6 +544,8 @@ in
         # The base domains of the agent merge over allowedDomains.
         allowlist_is '.["crates.io"] == "*"'
         allowlist_is '.["anthropic.com"] == "*"'
+        # A path rule reaches the proxy as an object with two keys only.
+        allowlist_is '.["buzz.example"] == {"methods":["GET"],"paths":["/buzz/agent/mcp/fable","/buzz/agent/mcp/fable/*"]}'
         ${githubAllowlistAssertions}
       '';
     };

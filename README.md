@@ -463,7 +463,8 @@ agentbox.lib.${system}.mkClaudeVm {
 
 An attrset mapping each host origin to the HTTP methods allowed for it. Use
 `"*"` for all methods, or a list to restrict. Domains suffix-match, so
-`"anthropic.com"` also covers `*.anthropic.com`.
+`"anthropic.com"` also covers `*.anthropic.com`. To allow only some paths on a
+domain, see "Path rules" below.
 
 ```nix
 allowedDomains = {
@@ -495,6 +496,58 @@ Rules for a key with a port:
 The port support comes from `patches/proxy-ports.patch`, which this flake
 applies to the `agent-sandbox.nix` input. Upstream allows port 443 for `CONNECT`
 and port 80 for plaintext only.
+
+### Path rules
+
+A path rule limits a domain to the paths that you list. Write the value as an
+object with `methods` and `paths`. If you omit `methods`, the value is `"*"`.
+
+```nix
+allowedDomains."buzz.example.internal" = {
+  methods = "*";
+  paths = [
+    "/buzz/agent/mcp/fable"
+    "/buzz/agent/mcp/fable/*"
+  ];
+};
+```
+
+This rule has these effects:
+
+- The sandbox can request the exact path `/buzz/agent/mcp/fable`.
+- The sandbox can request a path below `/buzz/agent/mcp/fable/` at any depth,
+  for example `/buzz/agent/mcp/fable/sse`.
+- The proxy blocks each other path on the domain with HTTP 403, for example
+  `/buzz/agent/mcp/claude/sse` and `/`.
+
+Each sandbox has its own allowlist. To give one agent a path, put the rule in
+the configuration of that sandbox only. The other sandboxes cannot reach the
+path, because their allowlists do not contain the rule.
+
+The `"*"` and method-list forms allow every path on the domain.
+
+Rules for a pattern:
+
+- A pattern starts with `/`.
+- `*` is allowed only as the whole last segment. It matches one or more
+  segments.
+- `/` matches the root path only.
+- The `paths` list must contain at least one pattern.
+
+Rules for a request on a domain with a path rule:
+
+- The proxy reads the path with the Go `net/url` parser.
+- A segment can contain only `A-Z`, `a-z`, `0-9`, and `- . _ ~ ! $ & ' ( ) * + , = : @`.
+- The proxy blocks a `%` escape, an empty segment (`//` or a trailing `/`), a
+  `.` segment, and a `..` segment.
+- The proxy blocks `;`. Some servers remove path parameters, so `/a/..;/b`
+  reaches them as `/b`.
+- A query string must parse with `url.ParseQuery`. It can contain the segment
+  characters, `/`, `?`, and valid `%XX` escapes.
+- Matches are case-sensitive.
+
+The path rules come from `patches/proxy-paths.patch`, which applies after
+`patches/proxy-ports.patch`.
 
 ### Ports and UNIX sockets
 

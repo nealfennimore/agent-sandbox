@@ -1,0 +1,447 @@
+diff --git a/proxy/main.go b/proxy/main.go
+index c6f743c..354ccfe 100644
+--- a/proxy/main.go
++++ b/proxy/main.go
+@@ -17,6 +17,7 @@ import (
+ 	"math/big"
+ 	"net"
+ 	"net/http"
++	"net/url"
+ 	"os"
+ 	"sort"
+ 	"strconv"
+@@ -26,9 +27,23 @@ import (
+ 	"time"
+ )
+ 
++// DomainPolicy is the policy of one allowlist entry. Paths is nil for an entry
++// written as "*" or as a method list, and such an entry allows every path. An
++// entry written as an object sets Paths, and then only the paths it names
++// pass.
+ type DomainPolicy struct {
+ 	AllowAll bool
+ 	Methods  map[string]bool
++	Paths    []pathPattern
++}
++
++// pathPattern is one entry of a "paths" list, split into its segments.
++// "/a/b" gives segments ["a", "b"]. "/a/b/*" gives segments ["a", "b"] and
++// wildcard true: it then matches one or more further segments, at any depth.
++// "/" gives no segments and matches the root only.
++type pathPattern struct {
++	segments []string
++	wildcard bool
+ }
+ 
+ // Config maps allowlist entries to their policies. An entry is a domain
+@@ -185,7 +200,7 @@ func loadConfig(path string) (Config, error) {
+ 	}
+ 	defer f.Close()
+ 
+-	// JSON format: { "domain": "*" | ["GET","HEAD"], ... }
++	// JSON format: { "domain": "*" | ["GET","HEAD"] | {"methods": ..., "paths": [...]}, ... }
+ 	var raw map[string]json.RawMessage
+ 	if err := json.NewDecoder(f).Decode(&raw); err != nil {
+ 		return nil, fmt.Errorf("parse config: %w", err)
+@@ -205,28 +220,11 @@ func loadConfig(path string) (Config, error) {
+ 				fmt.Fprintf(os.Stderr, "WARNING: invalid port in allowlist entry %q\n", domain)
+ 			}
+ 		}
+-		var star string
+-		if err := json.Unmarshal(val, &star); err == nil {
+-			if star == "*" {
+-				cfg[domain] = DomainPolicy{AllowAll: true}
+-			} else {
+-				return nil, fmt.Errorf("invalid policy for %q: string must be \"*\", got %q", domain, star)
+-			}
+-			continue
+-		}
+-		var methods []string
+-		if err := json.Unmarshal(val, &methods); err != nil {
+-			return nil, fmt.Errorf("invalid policy for %q: expected \"*\" or [\"METHOD\", ...]: %w", domain, err)
+-		}
+-		m := make(map[string]bool)
+-		for _, method := range methods {
+-			upper := strings.ToUpper(method)
+-			if !knownHTTPMethods[upper] {
+-				fmt.Fprintf(os.Stderr, "WARNING: unrecognized HTTP method %q for domain %q\n", method, domain)
+-			}
+-			m[upper] = true
++		policy, err := parsePolicy(domain, val)
++		if err != nil {
++			return nil, err
+ 		}
+-		cfg[domain] = DomainPolicy{Methods: m}
++		cfg[domain] = policy
+ 	}
+ 	// Named at startup because the matching code is the only other place it is
+ 	// visible, and "*" reads as a floor under the listed hosts rather than the
+@@ -246,6 +244,215 @@ func loadConfig(path string) (Config, error) {
+ 	return cfg, nil
+ }
+ 
++// parsePolicy reads one allowlist value: "*", a method list, or an object
++// with "methods" and "paths".
++func parsePolicy(domain string, val json.RawMessage) (DomainPolicy, error) {
++	trimmed := bytes.TrimSpace(val)
++	if len(trimmed) > 0 && trimmed[0] == '{' {
++		return parsePathPolicy(domain, trimmed)
++	}
++	return parseMethods(domain, val)
++}
++
++func parseMethods(domain string, val json.RawMessage) (DomainPolicy, error) {
++	var star string
++	if err := json.Unmarshal(val, &star); err == nil {
++		if star == "*" {
++			return DomainPolicy{AllowAll: true}, nil
++		}
++		return DomainPolicy{}, fmt.Errorf("invalid policy for %q: string must be \"*\", got %q", domain, star)
++	}
++	var methods []string
++	if err := json.Unmarshal(val, &methods); err != nil {
++		return DomainPolicy{}, fmt.Errorf("invalid policy for %q: expected \"*\", [\"METHOD\", ...] or {\"methods\": ..., \"paths\": [...]}: %w", domain, err)
++	}
++	m := make(map[string]bool)
++	for _, method := range methods {
++		upper := strings.ToUpper(method)
++		if !knownHTTPMethods[upper] {
++			fmt.Fprintf(os.Stderr, "WARNING: unrecognized HTTP method %q for domain %q\n", method, domain)
++		}
++		m[upper] = true
++	}
++	return DomainPolicy{Methods: m}, nil
++}
++
++// parsePathPolicy reads the object form {"methods": "*" | [...], "paths":
++// [...]}. A missing "methods" means "*". An unknown key, an empty "paths"
++// list, or a bad pattern fails the load, so a typo cannot widen the policy.
++func parsePathPolicy(domain string, val []byte) (DomainPolicy, error) {
++	var obj struct {
++		Methods json.RawMessage `json:"methods"`
++		Paths   []string        `json:"paths"`
++	}
++	dec := json.NewDecoder(bytes.NewReader(val))
++	dec.DisallowUnknownFields()
++	if err := dec.Decode(&obj); err != nil {
++		return DomainPolicy{}, fmt.Errorf("invalid policy for %q: %w", domain, err)
++	}
++	policy := DomainPolicy{AllowAll: true}
++	if obj.Methods != nil {
++		var err error
++		policy, err = parseMethods(domain, obj.Methods)
++		if err != nil {
++			return DomainPolicy{}, err
++		}
++	}
++	if len(obj.Paths) == 0 {
++		return DomainPolicy{}, fmt.Errorf("invalid policy for %q: \"paths\" must list at least one path", domain)
++	}
++	for _, p := range obj.Paths {
++		pat, err := parsePathPattern(p)
++		if err != nil {
++			return DomainPolicy{}, fmt.Errorf("invalid path %q for %q: %w", p, domain, err)
++		}
++		policy.Paths = append(policy.Paths, pat)
++	}
++	return policy, nil
++}
++
++// parsePathPattern reads one "paths" entry. "*" is allowed only as the whole
++// last segment. Each literal segment must pass checkSegment, the same check
++// that a request path must pass.
++func parsePathPattern(p string) (pathPattern, error) {
++	if !strings.HasPrefix(p, "/") {
++		return pathPattern{}, errors.New("a path must start with \"/\"")
++	}
++	if p == "/" {
++		return pathPattern{}, nil
++	}
++	segments := strings.Split(p[1:], "/")
++	var pat pathPattern
++	for i, seg := range segments {
++		if seg == "*" {
++			if i != len(segments)-1 {
++				return pathPattern{}, errors.New("\"*\" is allowed only as the last segment")
++			}
++			pat.wildcard = true
++			break
++		}
++		if strings.Contains(seg, "*") {
++			return pathPattern{}, errors.New("\"*\" must be a whole segment")
++		}
++		if err := checkSegment(seg); err != nil {
++			return pathPattern{}, err
++		}
++		pat.segments = append(pat.segments, seg)
++	}
++	return pat, nil
++}
++
++// isPathChar reports whether c is an RFC 3986 pchar other than "%" and ";".
++// "%" is refused so that the bytes the proxy matches are the bytes the origin
++// decodes. ";" is refused because some servers (Tomcat, Jetty) strip path
++// parameters, so "/a/..;/b" reaches them as "/b".
++func isPathChar(c byte) bool {
++	switch {
++	case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', '0' <= c && c <= '9':
++		return true
++	}
++	return strings.IndexByte("-._~!$&'()*+,=:@", c) >= 0
++}
++
++func isHex(c byte) bool {
++	return ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
++}
++
++// checkSegment refuses an empty segment ("//" or a trailing "/"), a dot
++// segment, and a character outside isPathChar.
++func checkSegment(seg string) error {
++	if seg == "" {
++		return errors.New("empty path segment")
++	}
++	if seg == "." || seg == ".." {
++		return errors.New("dot segment")
++	}
++	for i := 0; i < len(seg); i++ {
++		if !isPathChar(seg[i]) {
++			return fmt.Errorf("character %q is not allowed", seg[i])
++		}
++	}
++	return nil
++}
++
++// matches compares path segments with the pattern. A wildcard pattern needs
++// at least one segment after its literal segments.
++func (p pathPattern) matches(segments []string) bool {
++	if p.wildcard {
++		if len(segments) <= len(p.segments) {
++			return false
++		}
++	} else if len(segments) != len(p.segments) {
++		return false
++	}
++	for i, seg := range p.segments {
++		if segments[i] != seg {
++			return false
++		}
++	}
++	return true
++}
++
++// pathAllowed judges the request URL that net/url parsed. EscapedPath gives
++// the path as the client sent it (RawPath, when net/url kept it). The check
++// requires that form to have no "%" and to equal the decoded Path, so a match
++// on Path is a match on the bytes that went over the wire.
++func pathAllowed(u *url.URL, patterns []pathPattern) bool {
++	if u.Opaque != "" {
++		return false
++	}
++	if escaped := u.EscapedPath(); escaped != u.Path || strings.Contains(escaped, "%") {
++		return false
++	}
++	path := u.Path
++	if path == "" {
++		path = "/"
++	}
++	if !strings.HasPrefix(path, "/") {
++		return false
++	}
++	var segments []string
++	if path != "/" {
++		segments = strings.Split(path[1:], "/")
++	}
++	for _, seg := range segments {
++		if checkSegment(seg) != nil {
++			return false
++		}
++	}
++	for _, pat := range patterns {
++		if pat.matches(segments) {
++			return true
++		}
++	}
++	return false
++}
++
++// queryAllowed accepts an empty query, or a query of RFC 3986 query
++// characters (pchar, "/" and "?", with ";" refused as in isPathChar) whose
++// escapes are well formed and which url.ParseQuery reads without error.
++func queryAllowed(u *url.URL) bool {
++	q := u.RawQuery
++	if q == "" {
++		return true
++	}
++	for i := 0; i < len(q); i++ {
++		c := q[i]
++		if c == '%' {
++			if i+2 >= len(q) || !isHex(q[i+1]) || !isHex(q[i+2]) {
++				return false
++			}
++			i += 2
++			continue
++		}
++		if !isPathChar(c) && c != '/' && c != '?' {
++			return false
++		}
++	}
++	_, err := url.ParseQuery(q)
++	return err == nil
++}
++
+ // defaultPorts are the ports that an allowlist entry covers when the entry
+ // names no port: 443 for CONNECT (TLS) and 80 for plaintext HTTP.
+ var defaultPorts = map[string]bool{"80": true, "443": true}
+@@ -524,8 +731,18 @@ func applyFilters(req *http.Request, host, port string, cfg Config) (int, string
+ 	if (normalizedMethod == "GET" || normalizedMethod == "HEAD") && hasRequestBody(req) {
+ 		return http.StatusForbidden, "body not allowed on this method"
+ 	}
++	policy, _ := lookupPolicy(host, port, cfg)
++	// Checked on every request, not at CONNECT: one tunnel carries many
++	// requests, and each names its own path.
++	if policy.Paths != nil {
++		if !pathAllowed(req.URL, policy.Paths) {
++			return http.StatusForbidden, "path not allowed"
++		}
++		if !queryAllowed(req.URL) {
++			return http.StatusForbidden, "query not allowed"
++		}
++	}
+ 	if isWebSocketUpgrade(req) {
+-		policy, _ := lookupPolicy(host, port, cfg)
+ 		if !policy.AllowAll {
+ 			return http.StatusForbidden, "WebSocket not allowed"
+ 		}
+diff --git a/proxy/main_test.go b/proxy/main_test.go
+index ac832d2..2d0771f 100644
+--- a/proxy/main_test.go
++++ b/proxy/main_test.go
+@@ -882,3 +882,128 @@ func TestServeRefusesBeyondMaxConns(t *testing.T) {
+ 		t.Errorf("connection %d got %q, want 503 once the cap is reached", maxConns+1, status)
+ 	}
+ }
++
++// loadTestConfig writes raw to an allowlist file and loads it, so the tests
++// cover the JSON form an operator writes as well as the matching.
++func loadTestConfig(t *testing.T, raw string) (Config, error) {
++	t.Helper()
++	path := filepath.Join(t.TempDir(), "allowlist.json")
++	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
++		t.Fatalf("write config: %v", err)
++	}
++	return loadConfig(path)
++}
++
++func TestPathPolicy(t *testing.T) {
++	cfg, err := loadTestConfig(t, `{
++		"buzz.example": {"paths": ["/buzz/agent/mcp/fable", "/buzz/agent/mcp/fable/*"]},
++		"get.example": {"methods": ["GET"], "paths": ["/read/*"]},
++		"root.example": {"paths": ["/"]},
++		"open.example": "*",
++		"list.example": ["GET"]
++	}`)
++	if err != nil {
++		t.Fatalf("loadConfig: %v", err)
++	}
++	cases := []struct {
++		name   string
++		host   string
++		target string
++		method string
++		status int
++	}{
++		{"exact path", "buzz.example", "/buzz/agent/mcp/fable", "", 0},
++		{"wildcard depth 1", "buzz.example", "/buzz/agent/mcp/fable/sse", "", 0},
++		{"wildcard depth 3", "buzz.example", "/buzz/agent/mcp/fable/a/b/c", "", 0},
++		{"wildcard allows POST by default", "buzz.example", "/buzz/agent/mcp/fable/sse", "POST", 0},
++		{"wildcard segment with pchar", "buzz.example", "/buzz/agent/mcp/fable/a-b_c.d~e!$&'()*+,=:@", "", 0},
++		{"clean query", "buzz.example", "/buzz/agent/mcp/fable/sse?session=a1&x=%20y/z?", "", 0},
++		{"sibling agent", "buzz.example", "/buzz/agent/mcp/claude/sse", "", http.StatusForbidden},
++		{"parent path", "buzz.example", "/buzz/agent/mcp", "", http.StatusForbidden},
++		{"root", "buzz.example", "/", "", http.StatusForbidden},
++		{"prefix without separator", "buzz.example", "/buzz/agent/mcp/fablex", "", http.StatusForbidden},
++		{"trailing slash", "buzz.example", "/buzz/agent/mcp/fable/", "", http.StatusForbidden},
++		{"double slash", "buzz.example", "/buzz/agent/mcp/fable//x", "", http.StatusForbidden},
++		{"dot-dot", "buzz.example", "/buzz/agent/mcp/fable/../claude", "", http.StatusForbidden},
++		{"dot", "buzz.example", "/buzz/agent/mcp/fable/./x", "", http.StatusForbidden},
++		{"escaped dot-dot", "buzz.example", "/buzz/agent/mcp/fable/%2e%2e/claude", "", http.StatusForbidden},
++		{"escaped slash", "buzz.example", "/buzz/agent/mcp/fable/a%2Fb", "", http.StatusForbidden},
++		{"escaped literal", "buzz.example", "/buzz/agent/mcp/%66able/x", "", http.StatusForbidden},
++		{"escaped space", "buzz.example", "/buzz/agent/mcp/fable/a%20b", "", http.StatusForbidden},
++		{"backslash", "buzz.example", "/buzz/agent/mcp/fable/a\\b", "", http.StatusForbidden},
++		{"semicolon", "buzz.example", "/buzz/agent/mcp/fable/..;/claude", "", http.StatusForbidden},
++		{"case differs", "buzz.example", "/buzz/agent/mcp/Fable/x", "", http.StatusForbidden},
++		{"bad query escape", "buzz.example", "/buzz/agent/mcp/fable/sse?x=%zz", "", http.StatusForbidden},
++		{"truncated query escape", "buzz.example", "/buzz/agent/mcp/fable/sse?x=%2", "", http.StatusForbidden},
++		{"query semicolon", "buzz.example", "/buzz/agent/mcp/fable/sse?a=1;b=2", "", http.StatusForbidden},
++		{"query backslash", "buzz.example", "/buzz/agent/mcp/fable/sse?a=\\", "", http.StatusForbidden},
++		{"absolute form allowed", "buzz.example", "http://buzz.example/buzz/agent/mcp/fable/x", "", 0},
++		{"absolute form blocked", "buzz.example", "http://buzz.example/buzz/agent/mcp/claude/x", "", http.StatusForbidden},
++		{"asterisk form", "buzz.example", "*", "OPTIONS", http.StatusForbidden},
++		{"method list still applies", "get.example", "/read/x", "POST", http.StatusForbidden},
++		{"method list path", "get.example", "/read/x", "GET", 0},
++		{"wildcard needs a segment", "get.example", "/read", "GET", http.StatusForbidden},
++		{"root pattern", "root.example", "/", "", 0},
++		{"root pattern only", "root.example", "/x", "", http.StatusForbidden},
++		{"star entry has no path filter", "open.example", "/any/../thing%2F", "", 0},
++		{"method entry has no path filter", "list.example", "/any//thing", "GET", 0},
++	}
++	for _, c := range cases {
++		t.Run(c.name, func(t *testing.T) {
++			method := c.method
++			if method == "" {
++				method = "GET"
++			}
++			raw := fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\n\r\n", method, c.target, c.host)
++			if method == "POST" {
++				raw = fmt.Sprintf("%s %s HTTP/1.1\r\nHost: %s\r\nContent-Length: 0\r\n\r\n", method, c.target, c.host)
++			}
++			req := readRequest(t, raw)
++			status, reason := applyFilters(req, c.host, "443", cfg)
++			if status != c.status {
++				t.Errorf("applyFilters(%s %s) = (%d, %q), want status %d", method, c.target, status, reason, c.status)
++			}
++		})
++	}
++}
++
++func TestPathPolicyWebSocket(t *testing.T) {
++	cfg, err := loadTestConfig(t, `{"buzz.example": {"paths": ["/ws/*"]}}`)
++	if err != nil {
++		t.Fatalf("loadConfig: %v", err)
++	}
++	for target, want := range map[string]int{"/ws/fable": 0, "/other": http.StatusForbidden} {
++		raw := "GET " + target + " HTTP/1.1\r\nHost: buzz.example\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
++		status, reason := applyFilters(readRequest(t, raw), "buzz.example", "443", cfg)
++		if status != want {
++			t.Errorf("WebSocket upgrade to %s = (%d, %q), want status %d", target, status, reason, want)
++		}
++	}
++}
++
++func TestLoadConfigRejectsBadPathPolicy(t *testing.T) {
++	cases := map[string]string{
++		"no paths key":         `{"a.example": {"methods": "*"}}`,
++		"empty paths":          `{"a.example": {"paths": []}}`,
++		"relative path":        `{"a.example": {"paths": ["a/b"]}}`,
++		"star not last":        `{"a.example": {"paths": ["/a/*/b"]}}`,
++		"star inside segment":  `{"a.example": {"paths": ["/a/b*"]}}`,
++		"double star":          `{"a.example": {"paths": ["/a/**"]}}`,
++		"empty segment":        `{"a.example": {"paths": ["/a//b"]}}`,
++		"trailing slash":       `{"a.example": {"paths": ["/a/"]}}`,
++		"dot-dot segment":      `{"a.example": {"paths": ["/a/../b"]}}`,
++		"percent escape":       `{"a.example": {"paths": ["/a%2Fb"]}}`,
++		"semicolon":            `{"a.example": {"paths": ["/a;b"]}}`,
++		"space":                `{"a.example": {"paths": ["/a b"]}}`,
++		"unknown key":          `{"a.example": {"paths": ["/a"], "path": ["/b"]}}`,
++		"bad methods string":   `{"a.example": {"methods": "GET", "paths": ["/a"]}}`,
++		"paths not a list":     `{"a.example": {"paths": "/a"}}`,
++	}
++	for name, raw := range cases {
++		t.Run(name, func(t *testing.T) {
++			if _, err := loadTestConfig(t, raw); err == nil {
++				t.Errorf("loadConfig(%s) succeeded, want an error", raw)
++			}
++		})
++	}
++}

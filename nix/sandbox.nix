@@ -4,6 +4,9 @@
 # exposes no override for it. The patch teaches that proxy to accept a
 # port in an allowlist key ("host:port"). Upstream accepts port 443 for
 # CONNECT and port 80 for plaintext only. See patches/proxy-ports.patch.
+# A second patch adds path rules. An allowlist value can be an object
+# with "methods" and "paths", and then the proxy allows only those
+# paths on the domain. See patches/proxy-paths.patch.
 # The patched tree keeps the same interface, so `default.nix` gives the
 # same `mkSandbox` and `commonTools` as `agent-sandbox.lib.${system}`.
 {
@@ -18,6 +21,9 @@ rec {
     src = agent-sandbox;
     patches = [
       ../patches/proxy-ports.patch
+      # Path rules per domain. The patch applies on top of
+      # proxy-ports.patch, so it must come after it in this list.
+      ../patches/proxy-paths.patch
       # Upstream (v3 through v5.6.3) refuses to launch when a declared env expression
       # references an unset variable. This patch downgrades that to a
       # warning: the variable is skipped and the agent falls back to its
@@ -42,6 +48,29 @@ rec {
       };
     };
   };
+
+  # The object form of an allowedDomains value: a path rule. The proxy
+  # allows only the listed paths on the domain. A final "*" segment
+  # matches one or more further segments.
+  pathPolicyModule = {
+    options = {
+      methods = lib.mkOption {
+        type = with lib.types; either str (listOf str);
+        default = "*";
+        description = "\"*\" for all HTTP methods, or a list of HTTP methods.";
+      };
+      paths = lib.mkOption {
+        type = with lib.types; nonEmptyListOf str;
+        description = "Paths the proxy allows on the domain, for example \"/api/v1\" or \"/api/v1/*\".";
+      };
+    };
+  };
+
+  # Write an allowedDomains value for the proxy JSON. A submodule value
+  # carries `_module`, which toJSON cannot convert, so keep only the two
+  # options.
+  allowlistValue =
+    value: if builtins.isAttrs value then { inherit (value) methods paths; } else value;
 
   # Reduce either entry form to the long form, so a caller that acts on
   # the port and the address reads one shape. nix/vm.nix uses this to
@@ -84,9 +113,15 @@ rec {
         description = "Agent package to wrap.";
       };
       allowedDomains = lib.mkOption {
-        type = with lib.types; attrsOf (either str (listOf str));
+        type =
+          with lib.types;
+          attrsOf (oneOf [
+            str
+            (listOf str)
+            (submodule pathPolicyModule)
+          ]);
         default = domains.agentDomains;
-        description = "Host-origin allowlist. \"*\" or a list of HTTP methods per key.";
+        description = "Host-origin allowlist. Per key: \"*\", a list of HTTP methods, or { methods; paths; } to allow only the listed paths.";
       };
       allowNix = lib.mkOption {
         type = lib.types.bool;
@@ -162,7 +197,7 @@ rec {
       roDirs = (agent.roDirs or [ ]) ++ cfg.extraRoDirs;
       roFiles = (agent.roFiles or [ ]) ++ cfg.extraRoFiles;
       env = agent.env // cfg.extraEnv;
-      allowedDomains = cfg.allowedDomains // agent.baseDomains;
+      allowedDomains = lib.mapAttrs (_: allowlistValue) (cfg.allowedDomains // agent.baseDomains);
       inherit (cfg)
         allowNix
         allowUnixSockets
