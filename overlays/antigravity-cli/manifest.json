@@ -1,21 +1,21 @@
 {
-  "version": "1.5.17",
+  "version": "1.5.19",
   "platforms": {
     "linux-arm64": {
       "asset": "agy_cli_linux_arm64.tar.gz",
-      "checksum": "d6d2b88493e6e02854da478b215cd1dd98fd8cf985b6be37829dacadea4ffc07"
+      "checksum": "aa316ff45b0d40b49ed83d29e3865857fca0c125f350fbb9d3c1cb9a640b49c4"
     },
     "linux-x64": {
       "asset": "agy_cli_linux_x64.tar.gz",
-      "checksum": "6304b4f592ae97e59231cfb1b365ee29c155750c9a881f0cc8efe5f5281077cf"
+      "checksum": "971a4aa707fb0886d4e1df5f1f50bad7b01aa492d0b1f13df4ea7402e96dae90"
     },
     "darwin-arm64": {
       "asset": "agy_cli_mac_arm64.tar.gz",
-      "checksum": "94d4c4755c9edbae3feba8f7d3c7b2764e6b239326efb0477b28407635c9e764"
+      "checksum": "4f1603c9de8c993a83a12ec06b7342b6fb7c27853e9d9fb6c786286461d1ff50"
     },
     "darwin-x64": {
       "asset": "agy_cli_mac_x64.tar.gz",
-      "checksum": "58cc9a6c11256de348193db4928fe7212d14aaa969ff17b8b9fcac2296579afc"
+      "checksum": "a8507272963d5a93f18bede59f6ba1efc29f6978a193a4ee5c9ad39a247b993e"
     }
   }
 }
